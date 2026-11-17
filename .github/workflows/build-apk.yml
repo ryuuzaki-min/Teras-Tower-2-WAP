@@ -55,11 +55,12 @@ jobs:
           node-version: 22
           cache: npm
 
-      - uses: actions/setup-java@v4
+      # Tanpa "cache: gradle": folder android/ baru dibuat di langkah berikutnya,
+      # jadi saat langkah ini berjalan belum ada berkas Gradle untuk di-cache.
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 21
-          cache: gradle
 
       - name: Pasang dependensi
         run: npm ci
