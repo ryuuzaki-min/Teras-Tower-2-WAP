@@ -76,6 +76,14 @@ function createContext(options) {
   FakeDate.UTC = RealDate.UTC; FakeDate.parse = RealDate.parse; FakeDate.prototype = RealDate.prototype;
 
   let lockHeld = 0;
+  const triggers = [];
+  // Tiruan HTTP: options.http(url, params) -> { code, body }. Semua panggilan dicatat.
+  const http = { calls: [], batches: [], lockAtCall: [], fetch: function (url, params) {
+    http.calls.push({ url: url, params: params });
+    http.lockAtCall.push(lockHeld);
+    const res = (options.http || function () { return { code: 200, body: '{}' }; })(url, params);
+    return { getResponseCode: function () { return res.code; }, getContentText: function () { return res.body; } };
+  } };
   const ctx = {
     console: console, JSON: JSON, Math: Math, Date: FakeDate, Number: Number, String: String, Array: Array, Object: Object,
     RegExp: RegExp, Error: Error, Set: Set,
@@ -97,7 +105,35 @@ function createContext(options) {
       DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },
       computeDigest: function (alg, text) { return toSigned(crypto.createHash('sha256').update(String(text), 'utf8').digest()); },
       computeHmacSha256Signature: function (text, key) { return toSigned(crypto.createHmac('sha256', String(key)).update(String(text), 'utf8').digest()); },
-      formatDate: function (d) { return new RealDate(d).toISOString().slice(0, 10); }
+      formatDate: function (d, tz, pattern) {
+        const iso = new RealDate(new RealDate(d).getTime() + 7 * 3600000).toISOString();
+        if (pattern === 'dd/MM/yyyy') return iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4);
+        if (pattern === 'yyyyMMddHHmmss') return iso.replace(/[-:T]/g, '').slice(0, 14);
+        return iso.slice(0, 10);
+      },
+      base64EncodeWebSafe: function (value) {
+        const buf = Array.isArray(value) ? Buffer.from(value.map(function (b) { return b < 0 ? b + 256 : b; })) : Buffer.from(String(value), 'utf8');
+        return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_');
+      },
+      computeRsaSha256Signature: function (input, key) {
+        return toSigned(crypto.sign('RSA-SHA256', Buffer.from(input, 'utf8'), key));
+      }
+    },
+    UrlFetchApp: {
+      fetch: function (url, params) { return http.fetch(url, params); },
+      fetchAll: function (requests) { http.batches.push(requests.length); return requests.map(function (r) { return http.fetch(r.url, r); }); }
+    },
+    ScriptApp: {
+      getService: function () { return { getUrl: function () { return 'https://script.google.com/macros/s/TEST/exec'; } }; },
+      getProjectTriggers: function () { return triggers.slice(); },
+      deleteTrigger: function (t) { triggers.splice(triggers.indexOf(t), 1); },
+      newTrigger: function (handler) {
+        const spec = { handler: handler };
+        const builder = { timeBased: function () { return builder; }, everyDays: function (n) { spec.everyDays = n; return builder; },
+          atHour: function (h) { spec.atHour = h; return builder; }, inTimezone: function (tz) { spec.tz = tz; return builder; },
+          create: function () { const t = { spec: spec, getHandlerFunction: function () { return handler; } }; triggers.push(t); return t; } };
+        return builder;
+      }
     },
     SpreadsheetApp: { getActiveSpreadsheet: function () { return {
       getSheetByName: function (n) { return sheets[n] || null; },
@@ -108,7 +144,6 @@ function createContext(options) {
       MimeType: { JSON: 'json' },
       createTextOutput: function (t) { return { text: t, setMimeType: function () { return this; }, getContent: function () { return t; } }; }
     },
-    ScriptApp: { getService: function () { return { getUrl: function () { return 'https://script.google.com/macros/s/TEST/exec'; } }; } },
     HtmlService: {}
   };
   ctx.globalThis = ctx;
@@ -118,7 +153,9 @@ function createContext(options) {
     ctx: ctx, sheets: sheets, cacheStore: cacheStore, props: props,
     advance: function (ms) { now += ms; },
     clearCache: function () { Object.keys(cacheStore).forEach(function (k) { delete cacheStore[k]; }); },
-    lockHeld: function () { return lockHeld; }
+    lockHeld: function () { return lockHeld; },
+    http: http,
+    triggers: triggers
   };
 }
 

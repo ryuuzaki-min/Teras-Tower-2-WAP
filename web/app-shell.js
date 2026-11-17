@@ -10,6 +10,7 @@
  *  4. Memberi tahu bila ada versi APK baru (SystemConfig: ApkVersiTerbaru,
  *     ApkTautanUnduh).
  *  5. Mendaftarkan service worker untuk versi PWA (iPhone / peramban).
+ *  6. Notifikasi push di aplikasi terpasang (v12).
  * =================================================================== */
 (function () {
   'use strict';
@@ -184,11 +185,89 @@
     setTimeout(function () { note.remove(); offlineNoticeShown = false; }, 6000);
   }
 
+  // -----------------------------------------------------------------
+  // Notifikasi push (v12) — hanya di aplikasi Android/iOS terpasang
+  // -----------------------------------------------------------------
+  var PUSH_TOKEN_KEY = 'tt2-push-token';
+  var push = { token: null, pendingPage: null, listening: false, signedInUser: null };
+  try { push.token = localStorage.getItem(PUSH_TOKEN_KEY); } catch (ignore) {}
+
+  function mainScreenVisible() {
+    var main = document.getElementById('mainScreen');
+    return !!(main && main.style.display !== 'none' && typeof currentUser !== 'undefined' && currentUser);
+  }
+  function openPushPage(page) {
+    if (!page) return;
+    if (mainScreenVisible() && typeof navigateTo === 'function') navigateTo(String(page));
+    else push.pendingPage = String(page);
+  }
+  function sendPushTokenToServer() {
+    var user = push.signedInUser;
+    if (!push.token || !user || !user.sessionToken || !window.TT2Remote) return;
+    window.TT2Remote.call('registerPushToken', [{ sessionToken: user.sessionToken, token: push.token, platform: platform }])
+      .catch(function (err) { console.warn('Token notifikasi gagal didaftarkan', err); });
+  }
+  function setupPushListeners() {
+    var P = plugin('PushNotifications');
+    if (!P || push.listening) return P;
+    push.listening = true;
+    P.addListener('registration', function (event) {
+      push.token = event && event.value;
+      try { localStorage.setItem(PUSH_TOKEN_KEY, push.token || ''); } catch (ignore) {}
+      sendPushTokenToServer();
+    });
+    P.addListener('registrationError', function (err) { console.warn('Pendaftaran notifikasi gagal', err); });
+    // Saat aplikasi sedang dibuka, Android tidak menampilkan notifikasi; tampilkan di dalam aplikasi.
+    P.addListener('pushNotificationReceived', function (notification) {
+      var text = [notification && notification.title, notification && notification.body].filter(Boolean).join(' — ');
+      if (text && typeof showAppNotice === 'function') showAppNotice(text, 'success');
+    });
+    P.addListener('pushNotificationActionPerformed', function (action) {
+      var data = action && action.notification && action.notification.data;
+      openPushPage(data && data.page);
+    });
+    return P;
+  }
+  function enablePush(user) {
+    push.signedInUser = user;
+    var P = setupPushListeners();
+    if (!P) return;
+    var channel = P.createChannel
+      ? P.createChannel({ id: 'tt2_umum', name: 'Pemberitahuan Tower 2', description: 'Pengumuman, agenda, dan kabar aspirasi', importance: 4, visibility: 1 }).catch(function () {})
+      : Promise.resolve();
+    channel.then(function () { return P.checkPermissions(); })
+      .then(function (status) {
+        if (status.receive === 'granted') return status;
+        if (status.receive === 'denied') return status;
+        return P.requestPermissions();
+      })
+      .then(function (status) {
+        if (status && status.receive === 'granted') return P.register();
+      })
+      .catch(function (err) { console.warn('Notifikasi tidak dapat diaktifkan', err); });
+    if (push.token) sendPushTokenToServer();
+    if (push.pendingPage) {
+      var page = push.pendingPage;
+      push.pendingPage = null;
+      setTimeout(function () { openPushPage(page); }, 400);
+    }
+  }
+  if (isNative) setupPushListeners();
+
   window.TT2Shell = {
     isNative: isNative,
     platform: platform,
     openExternal: openExternal,
     showOfflineNotice: showOfflineNotice,
+    // Dipanggil app.js setelah layar utama tampil (login / sesi dipulihkan).
+    onSignedIn: function (user) { if (isNative) enablePush(user); },
+    // Dipanggil app.js sebelum logout; selesai (resolve) setelah token dilepas dari akun.
+    onSignedOut: function (sessionToken) {
+      push.signedInUser = null;
+      if (!isNative || !push.token || !window.TT2Remote) return Promise.resolve();
+      return window.TT2Remote.call('unregisterPushToken', [{ sessionToken: sessionToken, token: push.token }])
+        .then(function () {}, function () {});
+    },
     exitApp: function () {
       var appPlugin = plugin('App');
       if (appPlugin && appPlugin.exitApp) appPlugin.exitApp();

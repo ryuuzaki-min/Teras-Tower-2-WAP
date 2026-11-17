@@ -399,6 +399,13 @@
   function showProfileScreen() {
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('profileScreen').style.display = 'block';
+    // v12: akun yang profilnya tidak dilengkapi dalam 7 hari dihapus otomatis.
+    if (currentUser && currentUser.profileDeadline) {
+      const deadlineText = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+        .format(new Date(currentUser.profileDeadline));
+      showAppDialog('Lengkapi profil Anda paling lambat ' + deadlineText + '. Akun yang profilnya belum lengkap setelah 7 hari sejak mendaftar akan dihapus otomatis.',
+        { title: 'Lengkapi profil' });
+    }
     if (refDataCache) {
       populateProfStatusOptions();
     } else {
@@ -533,6 +540,10 @@
 
   function showMainScreen() {
     if (!currentUser || !currentUser.sessionToken) { clearInvalidSession(); return; }
+    // v12: daftarkan perangkat untuk notifikasi push (hanya di aplikasi terpasang).
+    if (window.TT2Shell && typeof window.TT2Shell.onSignedIn === 'function') {
+      setTimeout(function () { window.TT2Shell.onSignedIn(currentUser); }, 600);
+    }
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('profileScreen').style.display = 'none';
     document.getElementById('mainScreen').style.display = 'flex';
@@ -589,7 +600,13 @@
 
   function logoutApp() {
     showAppConfirm('Yakin ingin keluar dari aplikasi?', function () {
-      if (currentUser && currentUser.sessionToken) { runServerWithLoader().logoutSession(currentUser.sessionToken); }
+      if (currentUser && currentUser.sessionToken) {
+        // v12: lepaskan perangkat dari notifikasi akun ini sebelum sesi diakhiri.
+        const endingToken = currentUser.sessionToken;
+        const endSession = function () { runServerWithLoader().logoutSession(endingToken); };
+        if (window.TT2Shell && typeof window.TT2Shell.onSignedOut === 'function') window.TT2Shell.onSignedOut(endingToken).then(endSession, endSession);
+        else endSession();
+      }
       currentUser = null;
       clearSession();
       document.getElementById('mainScreen').style.display = 'none';
@@ -807,6 +824,7 @@
     const fromHistory = !!(navOptions && navOptions.fromHistory);
     stopBannerAutoplay();
     stopHomeClock();
+    if (page === 'kelolaPengumuman' && !(currentUser && (currentUser.isAdmin || currentUser.isSuperAdmin))) page = 'beranda';
     if ((page === 'kelolaAgenda' || page === 'kartuPengelolaan') && !(currentUser && (currentUser.isAdmin || currentUser.isSuperAdmin))) {
       showAppNotice(page === 'kelolaAgenda' ? 'Kelola Agenda hanya tersedia untuk Admin dan SuperAdmin.' : 'Kartu Pengelolaan hanya tersedia untuk Admin dan SuperAdmin.', 'error');
       page = page === 'kelolaAgenda' ? 'kalenderKerja' : 'beranda';
@@ -849,6 +867,7 @@
     else if (page === 'notifikasi') renderNotifikasi();
     else if (page === 'feedback') renderAppFeedbackForm();
     else if (page === 'kalenderKerja') renderKalenderKerja();
+    else if (page === 'kelolaPengumuman') renderKelolaPengumuman();
   }
 
   // ===================================================================
@@ -1722,7 +1741,8 @@
       { label: 'Manajemen User', cards: card('kelolaWarga', '👥', 'Kelola Warga', 'warga') +
           (currentUser.isSuperAdmin ? card('kelolaAdmin', '🔐', 'Kelola Admin', 'admin') : '') },
       { label: 'Manajemen Aspirasi & Agenda', cards: card('admin', '🛡️', 'Kelola Aspirasi', 'aspirasi') +
-          card('kelolaKepuasan', '⭐', 'Kelola Kepuasan', 'kepuasan') + card('kelolaAgenda', '🗓️', 'Kelola Agenda') },
+          card('kelolaKepuasan', '⭐', 'Kelola Kepuasan', 'kepuasan') + card('kelolaAgenda', '🗓️', 'Kelola Agenda') +
+          card('kelolaPengumuman', '📢', 'Kirim Pengumuman') },
       { label: 'Manajemen Nomor Penting dan Darurat', cards: card('kelolaNomorPenting', '📇', 'Kelola Nomor Penting', 'nomorPenting') +
           card('kelolaNomorDarurat', '🚨', 'Kelola Nomor Darurat', 'nomorDarurat') },
       { label: 'Manajemen Jelajah Sekitar', cards: card('kelolaJelajah', '🧭', 'Kelola Jelajah') },
@@ -1741,6 +1761,101 @@
     setTimeout(loadAdminNotificationBadges, 0);
   }
 
+  // ===================================================================
+  // v12: PENGUMUMAN PENGURUS
+  // ===================================================================
+  function formatPengumumanTime(iso) {
+    if (!iso) return '';
+    return new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
+  }
+  function loadHomePengumuman() {
+    if (!currentUser || !currentUser.sessionToken) return;
+    runServerWithLoader()
+      .withSuccessHandler(function (result) {
+        const slot = document.getElementById('homePengumuman');
+        const item = result && result.pengumuman;
+        if (!slot || !item) return;
+        slot.innerHTML = '<section class="home-pengumuman" aria-label="Pengumuman pengurus">' +
+          '<div class="home-pengumuman-head"><span aria-hidden="true">📢</span><strong>' + escapeHtml(item.judul) + '</strong></div>' +
+          '<p class="home-pengumuman-body">' + escapeHtml(item.isi) + '</p>' +
+          '<div class="home-pengumuman-meta">Pengumuman pengurus · ' + escapeHtml(formatPengumumanTime(item.dikirimPada)) + '</div></section>';
+      })
+      .withFailureHandler(function (err) { console.warn('Pengumuman tidak termuat', err); })
+      .getPengumumanTerbaru(currentUser.sessionToken);
+  }
+
+  function renderKelolaPengumuman() {
+    document.getElementById('pageContent').innerHTML = getTopBar('Kirim Pengumuman') +
+      '<div class="page-title">Kirim Pengumuman</div>' +
+      '<p class="pengumuman-intro">Dikirim sebagai notifikasi ke HP warga yang memasang aplikasi, dan tampil di Beranda semua warga selama 3 hari.</p>' +
+      '<div id="pengumumanStatus" class="pengumuman-status"></div>' +
+      '<form id="pengumumanForm" class="card pengumuman-form" novalidate>' +
+        '<div class="field"><label for="pengumumanJudul">Judul</label>' +
+          '<input type="text" id="pengumumanJudul" maxlength="80" placeholder="Contoh: Air mati sementara" autocomplete="off">' +
+          '<div class="input-hint"><span id="pengumumanJudulCount">0</span>/80</div></div>' +
+        '<div class="field"><label for="pengumumanIsi">Isi pengumuman</label>' +
+          '<textarea id="pengumumanIsi" rows="5" maxlength="500" placeholder="Tulis singkat dan jelas: apa, kapan, dan apa yang perlu dilakukan warga."></textarea>' +
+          '<div class="input-hint"><span id="pengumumanIsiCount">0</span>/500</div></div>' +
+        '<button type="submit" class="btn-primary" id="pengumumanKirim">Kirim ke semua warga</button>' +
+      '</form>' +
+      '<h2 class="beranda-section-label">Riwayat pengumuman</h2><div id="pengumumanDaftar"><div class="spinner">Memuat...</div></div>' +
+      getCopyrightFooter();
+    ['Judul', 'Isi'].forEach(function (name) {
+      const input = document.getElementById('pengumuman' + name);
+      input.addEventListener('input', function () { document.getElementById('pengumuman' + name + 'Count').textContent = input.value.length; });
+    });
+    document.getElementById('pengumumanForm').addEventListener('submit', function (event) {
+      event.preventDefault();
+      const judul = document.getElementById('pengumumanJudul').value.trim();
+      const isi = document.getElementById('pengumumanIsi').value.trim();
+      if (judul.length < 3 || isi.length < 3) { showAppNotice('Judul dan isi pengumuman minimal 3 karakter.', 'error'); return; }
+      showAppConfirm('Kirim pengumuman "' + judul + '" ke semua warga sekarang? Notifikasi yang sudah terkirim tidak bisa ditarik kembali.', function () {
+        const button = document.getElementById('pengumumanKirim');
+        button.disabled = true;
+        runServerWithLoader()
+          .withSuccessHandler(function (result) {
+            button.disabled = false;
+            if (!result || !result.success) { showAppNotice((result && result.message) || 'Pengumuman gagal dikirim.', 'error'); return; }
+            document.getElementById('pengumumanJudul').value = '';
+            document.getElementById('pengumumanIsi').value = '';
+            ['Judul', 'Isi'].forEach(function (name) { document.getElementById('pengumuman' + name + 'Count').textContent = '0'; });
+            showAppNotice(result.pushAktif
+              ? 'Pengumuman dikirim ke ' + result.perangkat + ' perangkat dan tampil di Beranda.'
+              : 'Pengumuman tersimpan dan tampil di Beranda. Notifikasi push belum aktif (kunci Firebase belum diatur).', 'success');
+            loadKelolaPengumumanList();
+          })
+          .withFailureHandler(function (err) { button.disabled = false; showAppNotice('Pengumuman gagal dikirim: ' + (err && err.message || err), 'error'); })
+          .sendPengumuman({ sessionToken: currentUser.sessionToken, judul: judul, isi: isi });
+      }, 'Kirim');
+    });
+    loadKelolaPengumumanList();
+  }
+
+  function loadKelolaPengumumanList() {
+    runServerWithLoader()
+      .withSuccessHandler(function (result) {
+        const list = document.getElementById('pengumumanDaftar');
+        const status = document.getElementById('pengumumanStatus');
+        if (!list) return;
+        if (!result || !result.success) { list.innerHTML = '<div class="empty-state">' + escapeHtml((result && result.message) || 'Gagal memuat.') + '</div>'; return; }
+        if (status) status.innerHTML = result.pushAktif
+          ? '<span class="pengumuman-badge ok">Notifikasi aktif</span> ' + result.perangkat + ' perangkat terdaftar'
+          : '<span class="pengumuman-badge warn">Notifikasi belum aktif</span> Pengumuman tetap tampil di Beranda';
+        if (!result.daftar.length) { list.innerHTML = '<div class="empty-state">Belum ada pengumuman.</div>'; return; }
+        list.innerHTML = result.daftar.map(function (item) {
+          return '<article class="pengumuman-item"><div class="pengumuman-item-head"><strong>' + escapeHtml(item.judul) + '</strong>' +
+            '<span>' + escapeHtml(formatPengumumanTime(item.dikirimPada)) + '</span></div>' +
+            '<p>' + escapeHtml(item.isi) + '</p><div class="pengumuman-item-meta">oleh ' + escapeHtml(item.oleh) + ' · ' + item.perangkat + ' perangkat</div></article>';
+        }).join('');
+      })
+      .withFailureHandler(function (err) {
+        const list = document.getElementById('pengumumanDaftar');
+        if (list) list.innerHTML = '<div class="empty-state">Gagal memuat riwayat.</div>';
+        console.error(err);
+      })
+      .getPengumumanAdmin(currentUser.sessionToken);
+  }
+
   function renderBeranda() {
     const sapaan = getSapaan();
     const namaDisplay = getNamaDisplay();
@@ -1754,7 +1869,9 @@
       '</div>' +
       '<button type="button" class="home-agenda-link" onclick="navigateTo(\'kalenderKerja\')" aria-label="Buka Kalender Kerja dan agenda Tower 2">' +
         '<span id="homeClockDate">Memuat tanggal dan jam…</span><span class="home-agenda-hint">Ketuk untuk melihat agenda Tower 2</span>' +
-      '</button>';
+      '</button>' +
+      '<div id="homePengumuman" class="home-pengumuman-slot" aria-live="polite"></div>';
+    setTimeout(loadHomePengumuman, 0);
 
     // KEPUASAN BOX (hanya untuk user biasa, bukan admin/superadmin)
     if (!currentUser.isAdmin && !currentUser.isSuperAdmin) {

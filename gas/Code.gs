@@ -1,5 +1,5 @@
 // ===================================================================
-// TERAS TOWER 2 - Backend Apps Script (v11 - SESI PERSISTEN + API APLIKASI)
+// TERAS TOWER 2 - Backend Apps Script (v12 - NOTIFIKASI PUSH + PEMBERSIHAN AKUN)
 // ===================================================================
 
 // SUPER ADMIN CREDENTIALS
@@ -462,10 +462,18 @@ function validateFilePayload_(fileObj, required) {
   validateImageSignature_(fileObj);
 }
 
+// v12: notifikasi yang diantrekan di dalam kunci (queuePush_) dikirim SETELAH
+// kunci dilepas, supaya permintaan HTTP ke Firebase tidak menahan warga lain.
+let SCRIPT_LOCK_DEPTH_ = 0;
 function withScriptLock_(callback) {
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
-  try { return callback(); } finally { lock.releaseLock(); }
+  SCRIPT_LOCK_DEPTH_++;
+  try { return callback(); } finally {
+    SCRIPT_LOCK_DEPTH_--;
+    lock.releaseLock();
+    if (SCRIPT_LOCK_DEPTH_ === 0) flushPushQueue_();
+  }
 }
 
 function writeAuditLog_(action, actor, target, detail) {
@@ -643,7 +651,9 @@ const TT2_API_NAMES = [
   'saveNomorPenting', 'saveNomorDarurat', 'getAllAdmins', 'addAdmin', 'removeAdmin', 'updateSystemConfig', 'saveBanners',
   'submitAppFeedback', 'getAppFeedback', 'markAppFeedbackSeen', 'updateAppFeedback', 'getRekapKepuasan',
   'getMyKepuasanThisWeek', 'submitKepuasan', 'getAllKepuasanAdmin', 'getKontakData', 'getAppClock', 'getAgendaCalendar',
-  'saveAgenda', 'setAgendaActive', 'submitAgendaProposal', 'getAgendaManagementData', 'reviewAgendaProposal'
+  'saveAgenda', 'setAgendaActive', 'submitAgendaProposal', 'getAgendaManagementData', 'reviewAgendaProposal',
+  // v12
+  'registerPushToken', 'unregisterPushToken', 'sendPengumuman', 'getPengumumanTerbaru', 'getPengumumanAdmin'
 ];
 
 // Peta nama -> fungsi dibuat saat dipanggil, sehingga urutan deklarasi tidak berpengaruh.
@@ -761,6 +771,8 @@ function registerUser(payload) {
       sheet.appendRow([
         sheetText_(username), pinHash, '', '', '', '', '', 'user', 'false'
       ]);
+      // v12: tanggal daftar, dasar pembersihan otomatis akun yang tidak dilengkapi.
+      sheet.getRange(sheet.getLastRow(), ensureSheetColumn_(sheet, WARGA_REGISTERED_COL)).setValue(new Date());
       countHourlyEvent_('register');
       writeAuditLog_('REGISTER', username, username, 'new_account');
 
@@ -881,7 +893,8 @@ function loginWithPin(payload) {
         lantai: user.Lantai || '',
         unit: user.Unit || '',
         nomorWhatsApp: user.Nomor_WhatsApp || '',
-        profileComplete: user.ProfileComplete === 'true' || user.ProfileComplete === true
+        profileComplete: user.ProfileComplete === 'true' || user.ProfileComplete === true,
+        profileDeadline: getProfileDeadline_(user)
       }, remember)
     };
   } catch (err) {
@@ -1739,6 +1752,7 @@ function deleteWarga(payload) {
       if (String(values[i][usernameCol]).toLowerCase() === payload.username.toLowerCase()) {
         sheet.deleteRow(i + 1);
         bumpSessionVersion_(payload.username);
+        removePushTokensForUser_(payload.username);
         writeAuditLog_('DELETE_WARGA', payload.adminUsername, payload.username, '');
       }
     }
@@ -2296,6 +2310,8 @@ function submitAspirasi(payload) {
       };
       sheet.appendRow(headers.map(function (header) { return Object.prototype.hasOwnProperty.call(rowValues, header) ? rowValues[header] : ''; }));
       writeAuditLog_('SUBMIT_ASPIRASI', username, id, kategori);
+      // v12: notifikasi ke admin. Isi dibuat umum (tanpa nama warga) karena tampil di layar kunci.
+      queuePush_({ admins: true }, { title: 'Aspirasi baru masuk', body: 'Kategori: ' + kategori + '. Ketuk untuk menindaklanjuti.', page: 'admin' });
       return { success: true, id: id };
     });
   } catch (err) {
@@ -2530,6 +2546,17 @@ function updateTindakLanjut(payload) {
         sheet.getRange(i + 1, lastUpdatedByCol).setValue(payload.adminUsername);
         sheet.getRange(i + 1, lastUpdateTypeCol).setValue(updateType);
         writeAuditLog_('UPDATE_TINDAK_LANJUT', payload.adminUsername, targetId, updateType);
+        // v12: kabari warga pengirim hanya bila statusnya benar-benar berubah.
+        const ownerCol = headers.indexOf('Username');
+        const owner = ownerCol >= 0 ? String(values[i][ownerCol] || '').trim() : '';
+        // Bandingkan dengan StatusAspirasi lama (bukan kolom Sudah/Belum), dibaca sebelum diubah.
+        const previousStatus8 = String(values[i][status8Col - 1] || '').trim();
+        if (owner && previousStatus8 !== status8) {
+          const pushBody = nextStatus === 'Diselesaikan' ? 'Aspirasi Anda telah diselesaikan pengurus.'
+            : nextStatus === 'Ditolak' ? 'Aspirasi Anda tidak dapat ditindaklanjuti. Ketuk untuk melihat catatan pengurus.'
+            : 'Aspirasi Anda sudah dibaca pengurus.';
+          queuePush_({ usernames: [owner] }, { title: 'Aspirasi Anda diperbarui', body: pushBody, page: 'riwayat' });
+        }
         // The update changes LastUpdatedAt, so invalidate the cached admin
         // notification summary before the client refreshes its badge.
         invalidateNotificationSummaryCache_(session.username);
@@ -3205,6 +3232,7 @@ function saveAgenda(payload) {
     if (index >= 0) invalidateAgendaCacheForDate_(existing.Tanggal);
     invalidateAgendaCacheForDate_(date);
     writeAuditLog_(id ? 'UPDATE_TOWER_AGENDA' : 'CREATE_TOWER_AGENDA', session.username, eventId, title);
+    if (!id) queuePush_({ all: true }, { title: 'Agenda baru Tower 2', body: title + ' — ' + formatAgendaDateForPush_(date, startTime), page: 'kalenderKerja' });
     return { success: true, id: eventId, message: id ? 'Agenda berhasil diperbarui.' : 'Agenda berhasil ditambahkan.' };
   });
 }
@@ -3380,6 +3408,463 @@ function reviewAgendaProposal(payload) {
     proposalSheet.getRange(rowNumber, reviewedByCol).setValue(sheetText_(session.username));
     if (agendaIdCol > 0) proposalSheet.getRange(rowNumber, agendaIdCol).setValue(agendaId);
     writeAuditLog_(decision === 'approve' ? 'APPROVE_AGENDA_PROPOSAL' : 'REJECT_AGENDA_PROPOSAL', session.username, id, note || String(proposal.Judul || ''));
+    if (decision === 'approve') queuePush_({ all: true }, { title: 'Agenda baru Tower 2', body: String(proposal.Judul || '') + ' — ' + formatAgendaDateForPush_(agendaDateKey_(proposal.Tanggal), agendaTimeKey_(proposal.JamMulai)), page: 'kalenderKerja' });
     return { success: true, agendaId: agendaId, message: decision === 'approve' ? 'Usulan disetujui dan agenda sekarang tampil di kalender.' : 'Usulan agenda ditolak.' };
   });
+}
+
+// ===================================================================
+// v12 — PEMBERSIHAN OTOMATIS AKUN YANG TIDAK DILENGKAPI
+// -------------------------------------------------------------------
+// • Akun warga yang profilnya belum lengkap 7 hari setelah daftar dihapus
+//   otomatis setiap hari sekitar pukul 02.00 WIB.
+// • Hari ke-5: pengingat lewat notifikasi push (bila warga memasang APK).
+// • Sebelum dihapus, baris akun disalin utuh ke sheet tersembunyi
+//   ArsipAkunDihapus, sehingga bisa dipulihkan manual bila keliru.
+// • Akun Admin/SuperAdmin dan akun yang profilnya lengkap tidak pernah disentuh.
+// • Akun lama tanpa tanggal daftar diberi tanggal saat pembersihan pertama
+//   berjalan, jadi mereka tetap mendapat 7 hari penuh.
+// • SystemConfig KEY "PembersihanAkun": aktif (bawaan) | uji (hanya mencatat,
+//   tidak menghapus) | mati.
+// Aktifkan sekali: jalankan fungsi aktifkanOtomatisasiTT2 dari editor Apps Script.
+// ===================================================================
+const WARGA_REGISTERED_COL = 'TerdaftarPada';
+const WARGA_REMINDER_COL = 'PengingatProfil';
+const SHEET_ACCOUNT_ARCHIVE = 'ArsipAkunDihapus';
+const ACCOUNT_CLEANUP_DAYS = 7;
+const ACCOUNT_REMINDER_DAYS = 5;
+const DAY_MS_ = 24 * 60 * 60 * 1000;
+
+function isProfileCompleteValue_(value) {
+  return value === true || String(value || '').trim().toLowerCase() === 'true';
+}
+
+function getCleanupMode_() {
+  const raw = String(getSystemConfig_().PembersihanAkun || '').trim().toLowerCase();
+  if (raw === 'mati' || raw === 'off' || raw === 'false') return 'mati';
+  if (raw === 'uji' || raw === 'test') return 'uji';
+  return 'aktif';
+}
+
+// Batas waktu melengkapi profil (ISO) untuk ditampilkan saat login; '' bila tidak berlaku.
+function getProfileDeadline_(userRow) {
+  if (!userRow || isProfileCompleteValue_(userRow.ProfileComplete)) return '';
+  if (getCleanupMode_() !== 'aktif') return '';
+  const registered = new Date(userRow[WARGA_REGISTERED_COL]);
+  if (!userRow[WARGA_REGISTERED_COL] || isNaN(registered.getTime())) return '';
+  return new Date(registered.getTime() + ACCOUNT_CLEANUP_DAYS * DAY_MS_).toISOString();
+}
+
+function getAdminUsernameSet_() {
+  const set = {};
+  set[String(getSuperAdminConfig_().username || '').toLowerCase()] = true;
+  const sheet = getSheet_(SHEET_ADMINS);
+  if (sheet) {
+    getSheetData_(SHEET_ADMINS).forEach(function (row) {
+      if (row.Username) set[String(row.Username).toLowerCase()] = true;
+    });
+  }
+  return set;
+}
+
+function getAccountArchiveSheet_(headers) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_ACCOUNT_ARCHIVE);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_ACCOUNT_ARCHIVE);
+    sheet.getRange(1, 1, 1, headers.length + 2).setValues([['DihapusPada', 'Alasan'].concat(headers)]);
+    sheet.setFrozenRows(1);
+    try { sheet.hideSheet(); } catch (ignore) {}
+  }
+  return sheet;
+}
+
+// Inti pembersihan. options.now (ms) hanya untuk pengujian.
+function runAccountCleanup_(options) {
+  const mode = getCleanupMode_();
+  const report = { mode: mode, stamped: 0, reminded: 0, deleted: [], wouldDelete: [] };
+  if (mode === 'mati') return report;
+  const now = (options && options.now) || Date.now();
+  withScriptLock_(function () {
+    const sheet = getSheet_(SHEET_WARGA);
+    const registeredCol = ensureSheetColumn_(sheet, WARGA_REGISTERED_COL);
+    const reminderCol = ensureSheetColumn_(sheet, WARGA_REMINDER_COL);
+    const values = sheet.getDataRange().getValues();
+    const headers = values[0].map(String);
+    const userCol = headers.indexOf('Username');
+    const completeCol = headers.indexOf('ProfileComplete');
+    if (userCol < 0 || completeCol < 0) throw new Error('Kolom Username/ProfileComplete tidak ditemukan di WargaBaru.');
+    const admins = getAdminUsernameSet_();
+    const toDelete = [];
+    for (let i = 1; i < values.length; i++) {
+      const row = values[i];
+      const username = String(row[userCol] || '').trim();
+      if (!username || admins[username.toLowerCase()] || isProfileCompleteValue_(row[completeCol])) continue;
+      const registeredValue = row[registeredCol - 1];
+      const registered = registeredValue ? new Date(registeredValue).getTime() : NaN;
+      if (!registeredValue || isNaN(registered)) {
+        sheet.getRange(i + 1, registeredCol).setValue(new Date(now));
+        report.stamped++;
+        continue;
+      }
+      const ageDays = (now - registered) / DAY_MS_;
+      if (ageDays >= ACCOUNT_CLEANUP_DAYS) {
+        toDelete.push({ rowNumber: i + 1, username: username, row: row });
+      } else if (ageDays >= ACCOUNT_REMINDER_DAYS && !row[reminderCol - 1] && mode === 'aktif') {
+        const deadline = new Date(registered + ACCOUNT_CLEANUP_DAYS * DAY_MS_);
+        queuePush_({ usernames: [username] }, {
+          title: 'Lengkapi profil Anda',
+          body: 'Akun Teras Tower 2 Anda akan dihapus otomatis pada ' +
+            Utilities.formatDate(deadline, 'Asia/Jakarta', 'dd/MM/yyyy') + ' bila profil belum dilengkapi.',
+          page: 'profil'
+        });
+        sheet.getRange(i + 1, reminderCol).setValue(new Date(now));
+        report.reminded++;
+      }
+    }
+    if (mode === 'uji') {
+      report.wouldDelete = toDelete.map(function (item) { return item.username; });
+      if (toDelete.length) writeAuditLog_('CLEANUP_UJI', 'sistem', '', 'Akan dihapus: ' + report.wouldDelete.join(', '));
+      return;
+    }
+    if (!toDelete.length) return;
+    const archive = getAccountArchiveSheet_(values[0]);
+    // Hapus dari baris paling bawah agar nomor baris di atasnya tidak bergeser.
+    toDelete.sort(function (a, b) { return b.rowNumber - a.rowNumber; }).forEach(function (item) {
+      archive.appendRow([new Date(now), 'Profil tidak dilengkapi dalam ' + ACCOUNT_CLEANUP_DAYS + ' hari'].concat(item.row));
+      sheet.deleteRow(item.rowNumber);
+      bumpSessionVersion_(item.username);
+      removePushTokensForUser_(item.username);
+      writeAuditLog_('CLEANUP_HAPUS_AKUN', 'sistem', item.username, 'Profil tidak dilengkapi dalam ' + ACCOUNT_CLEANUP_DAYS + ' hari');
+      report.deleted.push(item.username);
+    });
+  });
+  return report;
+}
+
+// Dipanggil pemicu harian. Aman bila terpanggil lebih dari sekali sehari: hasilnya sama.
+function jalankanPembersihanAkunHarian() {
+  try {
+    const report = runAccountCleanup_();
+    console.log('Pembersihan akun: ' + JSON.stringify(report));
+    return report;
+  } catch (err) {
+    writeApplicationError_('jalankanPembersihanAkunHarian', err, 'sistem');
+    throw err;
+  }
+}
+
+// Jalankan SEKALI dari editor Apps Script (pilih fungsi ini lalu klik Jalankan).
+// Membuat pemicu harian pembersihan akun dan sekaligus meminta izin yang
+// dibutuhkan notifikasi push (akses ke layanan eksternal).
+function aktifkanOtomatisasiTT2() {
+  const handler = 'jalankanPembersihanAkunHarian';
+  ScriptApp.getProjectTriggers().forEach(function (trigger) {
+    if (trigger.getHandlerFunction() === handler) ScriptApp.deleteTrigger(trigger);
+  });
+  ScriptApp.newTrigger(handler).timeBased().everyDays(1).atHour(2).inTimezone('Asia/Jakarta').create();
+  const fcm = getFcmConfig_();
+  let fcmStatus = 'belum diatur (Script Property FCM_SERVICE_ACCOUNT kosong)';
+  if (fcm) {
+    try { getFcmAccessToken_(true); fcmStatus = 'tersambung ke proyek ' + fcm.project_id; }
+    catch (err) { fcmStatus = 'GAGAL: ' + err.message; }
+  }
+  const message = 'Pemicu pembersihan harian aktif (sekitar 02.00 WIB), mode: ' + getCleanupMode_() + '. Notifikasi push: ' + fcmStatus + '.';
+  console.log(message);
+  return message;
+}
+
+// ===================================================================
+// v12 — NOTIFIKASI PUSH (Firebase Cloud Messaging HTTP v1)
+// -------------------------------------------------------------------
+// • Token perangkat disimpan di sheet tersembunyi PushTokens.
+// • Kunci service account Firebase disimpan di Script Properties dengan nama
+//   FCM_SERVICE_ACCOUNT (isi file JSON utuh). Tidak pernah di repo/sheet.
+//   Bila belum diatur, semua fungsi tetap berjalan; notifikasi tidak terkirim.
+// • queuePush_ hanya mengantrekan; pengiriman terjadi setelah kunci skrip
+//   dilepas (withScriptLock_) atau lewat flushPushQueue_.
+// • Kegagalan kirim tidak pernah menggagalkan aksi utama (simpan aspirasi dll.).
+// ===================================================================
+const SHEET_PUSH_TOKENS = 'PushTokens';
+const PUSH_TOKEN_HEADERS = ['Token', 'Username', 'Platform', 'UpdatedAt'];
+const PUSH_MAX_TOKENS_PER_USER = 5;
+const PUSH_CHANNEL_ID = 'tt2_umum';
+let PUSH_QUEUE_ = [];
+let PUSH_FLUSHING_ = false;
+
+function getPushTokenSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_PUSH_TOKENS);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_PUSH_TOKENS);
+    sheet.getRange(1, 1, 1, PUSH_TOKEN_HEADERS.length).setValues([PUSH_TOKEN_HEADERS]);
+    sheet.setFrozenRows(1);
+    try { sheet.hideSheet(); } catch (ignore) {}
+  }
+  return sheet;
+}
+
+function readPushTokens_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PUSH_TOKENS);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, PUSH_TOKEN_HEADERS.length).getValues()
+    .filter(function (row) { return row[0]; })
+    .map(function (row) { return { token: String(row[0]), username: String(row[1] || ''), platform: String(row[2] || '') }; });
+}
+
+// Tanpa kunci: pemanggil yang menentukan (lihat catatan kunci bersarang di atas).
+function removePushTokensWhere_(predicate) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PUSH_TOKENS);
+  if (!sheet || sheet.getLastRow() < 2) return 0;
+  const values = sheet.getRange(2, 1, sheet.getLastRow() - 1, PUSH_TOKEN_HEADERS.length).getValues();
+  let removed = 0;
+  for (let i = values.length - 1; i >= 0; i--) {
+    if (predicate(values[i])) { sheet.deleteRow(i + 2); removed++; }
+  }
+  return removed;
+}
+function removePushTokensForUser_(username) {
+  const target = String(username || '').toLowerCase();
+  if (!target) return 0;
+  return removePushTokensWhere_(function (row) { return String(row[1] || '').toLowerCase() === target; });
+}
+
+function validatePushToken_(token) {
+  const value = String(token || '').trim();
+  if (value.length < 20 || value.length > 4096 || !/^[A-Za-z0-9:_\-]+$/.test(value)) throw new Error('Token notifikasi tidak valid.');
+  return value;
+}
+
+// Dipanggil aplikasi setelah login & izin notifikasi diberikan.
+function registerPushToken(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
+  const token = validatePushToken_(payload && payload.token);
+  const platform = String(payload && payload.platform || 'android').toLowerCase() === 'ios' ? 'ios' : (String(payload && payload.platform || '').toLowerCase() === 'web' ? 'web' : 'android');
+  return withScriptLock_(function () {
+    const sheet = getPushTokenSheet_();
+    // Satu perangkat = satu token. Bila perangkat dipakai akun lain, pemiliknya diganti.
+    removePushTokensWhere_(function (row) { return String(row[0]) === token; });
+    sheet.appendRow([token, sheetText_(session.username), platform, new Date()]);
+    // Batasi jumlah perangkat per akun: hapus yang paling lama.
+    const mine = readPushTokens_().filter(function (item) { return item.username.toLowerCase() === session.username.toLowerCase(); });
+    if (mine.length > PUSH_MAX_TOKENS_PER_USER) {
+      const drop = mine.slice(0, mine.length - PUSH_MAX_TOKENS_PER_USER).map(function (item) { return item.token; });
+      removePushTokensWhere_(function (row) { return drop.indexOf(String(row[0])) >= 0; });
+    }
+    return { success: true };
+  });
+}
+
+// Dipanggil aplikasi saat keluar, agar perangkat tidak menerima notifikasi akun itu lagi.
+function unregisterPushToken(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
+  const token = validatePushToken_(payload && payload.token);
+  return withScriptLock_(function () {
+    removePushTokensWhere_(function (row) {
+      return String(row[0]) === token && String(row[1] || '').toLowerCase() === session.username.toLowerCase();
+    });
+    return { success: true };
+  });
+}
+
+// target: { all: true } | { admins: true } | { usernames: ['a','b'] }
+// message: { title, body, page }
+function queuePush_(target, message) {
+  PUSH_QUEUE_.push({ target: target || {}, message: message || {} });
+  if (SCRIPT_LOCK_DEPTH_ === 0) flushPushQueue_();
+}
+
+function getFcmConfig_() {
+  const raw = PropertiesService.getScriptProperties().getProperty('FCM_SERVICE_ACCOUNT');
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed.client_email || !parsed.private_key || !parsed.project_id) return null;
+    return parsed;
+  } catch (err) { return null; }
+}
+
+function base64UrlJson_(value) {
+  return Utilities.base64EncodeWebSafe(JSON.stringify(value)).replace(/=+$/, '');
+}
+
+// Token akses OAuth untuk FCM, disimpan di cache 50 menit (berlaku 60 menit).
+function getFcmAccessToken_(forceRefresh) {
+  const cache = CacheService.getScriptCache();
+  if (!forceRefresh) {
+    const cached = cache.get('fcm-access-token');
+    if (cached) return cached;
+  }
+  const config = getFcmConfig_();
+  if (!config) throw new Error('FCM_SERVICE_ACCOUNT belum diatur.');
+  const nowSec = Math.floor(Date.now() / 1000);
+  const tokenUri = config.token_uri || 'https://oauth2.googleapis.com/token';
+  const unsigned = base64UrlJson_({ alg: 'RS256', typ: 'JWT' }) + '.' + base64UrlJson_({
+    iss: config.client_email,
+    scope: 'https://www.googleapis.com/auth/firebase.messaging',
+    aud: tokenUri, iat: nowSec, exp: nowSec + 3600
+  });
+  const signature = Utilities.base64EncodeWebSafe(Utilities.computeRsaSha256Signature(unsigned, config.private_key)).replace(/=+$/, '');
+  const response = UrlFetchApp.fetch(tokenUri, {
+    method: 'post', muteHttpExceptions: true,
+    payload: { grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: unsigned + '.' + signature }
+  });
+  if (response.getResponseCode() !== 200) throw new Error('Gagal mendapat token Firebase: HTTP ' + response.getResponseCode() + ' ' + response.getContentText().substring(0, 200));
+  const accessToken = JSON.parse(response.getContentText()).access_token;
+  cache.put('fcm-access-token', accessToken, 3000);
+  return accessToken;
+}
+
+function resolvePushRecipients_(target, allTokens, adminSet) {
+  if (target.all) return allTokens;
+  if (target.admins) return allTokens.filter(function (item) { return adminSet[item.username.toLowerCase()]; });
+  const wanted = {};
+  (target.usernames || []).forEach(function (name) { wanted[String(name || '').toLowerCase()] = true; });
+  return allTokens.filter(function (item) { return wanted[item.username.toLowerCase()]; });
+}
+
+function buildFcmMessage_(token, message) {
+  const data = { page: String(message.page || 'beranda') };
+  return {
+    message: {
+      token: token,
+      notification: { title: String(message.title || 'Teras Tower 2').substring(0, 100), body: String(message.body || '').substring(0, 400) },
+      data: data,
+      android: { priority: 'HIGH', notification: { channel_id: PUSH_CHANNEL_ID, icon: 'ic_stat_tt2', color: '#0E9CBF' } },
+      apns: { payload: { aps: { sound: 'default' } } }
+    }
+  };
+}
+
+// Mengirim semua notifikasi yang diantrekan. Tidak pernah melempar error.
+function flushPushQueue_() {
+  if (PUSH_FLUSHING_ || !PUSH_QUEUE_.length) return { sent: 0, failed: 0 };
+  PUSH_FLUSHING_ = true;
+  const queue = PUSH_QUEUE_;
+  PUSH_QUEUE_ = [];
+  const result = { sent: 0, failed: 0, removed: 0 };
+  try {
+    const config = getFcmConfig_();
+    if (!config) return result;
+    const allTokens = readPushTokens_();
+    if (!allTokens.length) return result;
+    const needsAdmins = queue.some(function (item) { return item.target.admins; });
+    const adminSet = needsAdmins ? getAdminUsernameSet_() : {};
+    const accessToken = getFcmAccessToken_();
+    const url = 'https://fcm.googleapis.com/v1/projects/' + encodeURIComponent(config.project_id) + '/messages:send';
+    const jobs = [];
+    queue.forEach(function (item) {
+      const seen = {};
+      resolvePushRecipients_(item.target, allTokens, adminSet).forEach(function (recipient) {
+        if (seen[recipient.token]) return;
+        seen[recipient.token] = true;
+        jobs.push({ token: recipient.token, body: buildFcmMessage_(recipient.token, item.message) });
+      });
+    });
+    const invalid = [];
+    for (let start = 0; start < jobs.length; start += 100) {
+      const batch = jobs.slice(start, start + 100);
+      const responses = UrlFetchApp.fetchAll(batch.map(function (job) {
+        return { url: url, method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+          headers: { Authorization: 'Bearer ' + accessToken }, payload: JSON.stringify(job.body) };
+      }));
+      responses.forEach(function (response, index) {
+        const code = response.getResponseCode();
+        if (code === 200) { result.sent++; return; }
+        result.failed++;
+        const text = response.getContentText();
+        if (code === 404 || /UNREGISTERED|registration-token-not-registered/.test(text) ||
+            (code === 400 && /INVALID_ARGUMENT/.test(text) && /token/i.test(text))) invalid.push(batch[index].token);
+        if (code === 401) CacheService.getScriptCache().remove('fcm-access-token');
+      });
+    }
+    if (invalid.length) {
+      withScriptLock_(function () {
+        result.removed = removePushTokensWhere_(function (row) { return invalid.indexOf(String(row[0])) >= 0; });
+      });
+    }
+  } catch (err) {
+    try { writeApplicationError_('flushPushQueue_', err, 'sistem'); } catch (ignore) {}
+  } finally {
+    PUSH_FLUSHING_ = false;
+  }
+  return result;
+}
+
+// ===================================================================
+// v12 — PENGUMUMAN PENGURUS
+// Disimpan di sheet Pengumuman, dikirim sebagai notifikasi ke semua perangkat,
+// dan tampil di Beranda selama 3 hari (untuk warga tanpa APK/notifikasi).
+// ===================================================================
+const SHEET_PENGUMUMAN = 'Pengumuman';
+const PENGUMUMAN_HEADERS = ['ID', 'DikirimPada', 'Judul', 'Isi', 'Oleh', 'Perangkat'];
+const PENGUMUMAN_HOME_DAYS = 3;
+const PENGUMUMAN_MAX_PER_HOUR = 10;
+
+function getPengumumanSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_PENGUMUMAN);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_PENGUMUMAN);
+    sheet.getRange(1, 1, 1, PENGUMUMAN_HEADERS.length).setValues([PENGUMUMAN_HEADERS]);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function readPengumuman_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PENGUMUMAN);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  return sheet.getRange(2, 1, sheet.getLastRow() - 1, PENGUMUMAN_HEADERS.length).getValues()
+    .filter(function (row) { return row[0]; })
+    .map(function (row) {
+      const sentAt = new Date(row[1]);
+      return { id: String(row[0]), dikirimPada: isNaN(sentAt.getTime()) ? '' : sentAt.toISOString(), judul: String(row[2] || ''),
+        isi: String(row[3] || ''), oleh: String(row[4] || ''), perangkat: Number(row[5] || 0) };
+    })
+    .sort(function (a, b) { return String(b.dikirimPada).localeCompare(String(a.dikirimPada)); });
+}
+
+function sendPengumuman(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['admin', 'super_admin']);
+  if (!isAdminUsername_(session.username)) return { success: false, message: 'Anda tidak memiliki akses.' };
+  try {
+    const judul = validateString_(payload.judul, 'Judul pengumuman', 3, 80);
+    const isi = validateString_(payload.isi, 'Isi pengumuman', 3, 500);
+    return withScriptLock_(function () {
+      if (isHourlyLimitReached_('pengumuman', PENGUMUMAN_MAX_PER_HOUR)) {
+        return { success: false, message: 'Batas ' + PENGUMUMAN_MAX_PER_HOUR + ' pengumuman per jam tercapai. Coba lagi nanti.' };
+      }
+      const deviceCount = readPushTokens_().length;
+      const id = 'PGM-' + Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyyMMddHHmmss') + '-' + Math.floor(Math.random() * 1000);
+      getPengumumanSheet_().appendRow([id, new Date(), sheetText_(judul), sheetText_(isi), sheetText_(session.username), deviceCount]);
+      countHourlyEvent_('pengumuman');
+      writeAuditLog_('KIRIM_PENGUMUMAN', session.username, id, judul);
+      queuePush_({ all: true }, { title: '📢 ' + judul, body: isi, page: 'beranda' });
+      return { success: true, id: id, perangkat: deviceCount, pushAktif: !!getFcmConfig_() };
+    });
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+}
+
+function getPengumumanTerbaru(sessionToken) {
+  requireSession_(sessionToken, ['resident', 'admin', 'super_admin']);
+  const latest = readPengumuman_()[0];
+  if (!latest || !latest.dikirimPada) return { success: true, pengumuman: null };
+  const age = Date.now() - new Date(latest.dikirimPada).getTime();
+  return { success: true, pengumuman: age <= PENGUMUMAN_HOME_DAYS * DAY_MS_ ? latest : null };
+}
+
+function getPengumumanAdmin(sessionToken) {
+  const session = requireSession_(sessionToken, ['admin', 'super_admin']);
+  if (!isAdminUsername_(session.username)) return { success: false, message: 'Anda tidak memiliki akses.' };
+  return { success: true, daftar: readPengumuman_().slice(0, 20), perangkat: readPushTokens_().length, pushAktif: !!getFcmConfig_() };
+}
+
+function formatAgendaDateForPush_(date, startTime) {
+  const parsed = date instanceof Date ? date : new Date(String(date || '') + 'T00:00:00+07:00');
+  const label = isNaN(parsed.getTime()) ? String(date || '') : Utilities.formatDate(parsed, 'Asia/Jakarta', 'dd/MM/yyyy');
+  const time = String(startTime || '').trim();
+  return label + (time ? ' pukul ' + time : '');
 }

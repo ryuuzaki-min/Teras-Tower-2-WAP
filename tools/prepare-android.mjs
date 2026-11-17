@@ -5,9 +5,11 @@
 // Workflow menjalankan `npx cap add android`, lalu skrip ini menambahkan:
 //   • versionCode/versionName dari variabel lingkungan
 //   • tanda tangan rilis dari GitHub Secrets
+//   • firebase/google-services.json -> android/app (notifikasi push, v12)
+//   • ikon notifikasi monokrom ic_stat_tt2 (v12)
 // Aman dijalankan berulang (idempoten).
 // ===================================================================
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -51,3 +53,28 @@ if (!gradle.includes(MARK)) {
 } else {
   console.log('build.gradle sudah dipersiapkan sebelumnya.');
 }
+
+// v12: konfigurasi Firebase untuk notifikasi push.
+const servicesSource = join(root, 'firebase', 'google-services.json');
+if (existsSync(servicesSource)) {
+  const services = JSON.parse(readFileSync(servicesSource, 'utf8'));
+  const appId = JSON.parse(readFileSync(join(root, 'capacitor.config.json'), 'utf8')).appId;
+  const packages = (services.client || []).map((c) => c.client_info && c.client_info.android_client_info && c.client_info.android_client_info.package_name);
+  if (!packages.includes(appId)) throw new Error(`google-services.json bukan untuk paket ${appId} (isi: ${packages.join(', ')}).`);
+  copyFileSync(servicesSource, join(root, 'android', 'app', 'google-services.json'));
+  console.log('google-services.json disalin (proyek ' + services.project_info.project_id + ').');
+} else {
+  console.log('firebase/google-services.json tidak ada: APK dibuat tanpa notifikasi push.');
+}
+
+// v12: ikon kecil notifikasi (vektor putih: tiga gedung). Android mewarnainya sendiri.
+const drawableDir = join(root, 'android', 'app', 'src', 'main', 'res', 'drawable');
+mkdirSync(drawableDir, { recursive: true });
+writeFileSync(join(drawableDir, 'ic_stat_tt2.xml'), `<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M9,3h6v18h-6z M3,8h5v13h-5z M16,8h5v13h-5z M2,21h20v1.5h-20z"/>
+</vector>
+`);
+console.log('Ikon notifikasi ic_stat_tt2 ditulis.');

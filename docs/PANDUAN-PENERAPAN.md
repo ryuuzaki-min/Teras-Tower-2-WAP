@@ -79,8 +79,52 @@ Ekstrak zip proyek, lalu seret seluruh isinya (termasuk folder `.github`) ke **U
 Ganti `resources/logo.png` (latar transparan), jalankan `npm run icons` lalu commit
 `web/icons/` dan `resources/`. Ikon dan splash Android dibuat ulang otomatis setiap build.
 
-## 7. Tahap berikutnya
+## 7. Pembaruan v12 — notifikasi push & pembersihan akun
 
-- Push notification (butuh Firebase/FCM).
+Urutan wajib:
+
+1. **Apps Script:** ganti 4 berkas dengan isi folder `gas/` (v12).
+2. **Kunci Firebase (rahasia):** Firebase Console > ikon gerigi > Project settings > tab
+   **Service accounts** > **Generate new private key**. Buka file JSON yang terunduh, salin SELURUH isinya.
+   Di editor Apps Script: **Project Settings** (gerigi kiri) > **Script Properties** > **Add script property**:
+   - Property: `FCM_SERVICE_ACCOUNT`
+   - Value: tempel seluruh isi JSON tadi
+   Simpan. Jangan kirim file ini ke chat, repo, atau grup.
+3. **Aktifkan otomatisasi:** di editor, pilih fungsi `aktifkanOtomatisasiTT2` di menu atas lalu
+   klik **Jalankan**. Setujui izin baru (layanan eksternal & pemicu). Log eksekusi harus berbunyi
+   `... Notifikasi push: tersambung ke proyek teras-tower-2-cd033.`
+4. **Deploy:** Kelola deployment > Edit > **Versi baru** > Terapkan (URL tetap).
+5. **APK 1.1.0:** unggah zip pembaruan seperti biasa, lalu buat rilis bertag `v1.1.0`.
+   Warga memasang APK 1.1.0 di atas versi lama dan mengizinkan notifikasi saat diminta.
+
+### Notifikasi yang dikirim
+
+| Kejadian | Penerima | Ketuk membuka |
+| --- | --- | --- |
+| Aspirasi baru masuk | Semua admin | Kelola Aspirasi |
+| Status aspirasi berubah (Dibaca/Diselesaikan/Ditolak) | Warga pengirim | Riwayat Saya |
+| Agenda baru dibuat / usulan agenda disetujui | Semua | Kalender Kerja |
+| Pengumuman dari Kartu Pengelolaan > Kirim Pengumuman | Semua | Beranda |
+| Pengingat hari ke-5 profil belum lengkap | Warga tersebut | Profil |
+
+Pengumuman juga tampil di Beranda selama 3 hari, untuk warga tanpa APK. Batas 10 pengumuman per jam.
+Teks notifikasi aspirasi dibuat umum (tanpa nama/isi) karena tampil di layar kunci.
+
+### Pembersihan akun
+
+- Setiap hari ±02.00 WIB: akun warga dengan profil belum lengkap 7 hari setelah daftar dihapus.
+- Admin/SuperAdmin dan akun berprofil lengkap tidak pernah disentuh.
+- Akun lama tanpa tanggal daftar diberi tanggal saat pembersihan pertama, jadi tetap mendapat 7 hari.
+- Akun yang dihapus disalin utuh ke sheet tersembunyi `ArsipAkunDihapus` (bisa dipulihkan manual).
+- Saat login, warga berprofil belum lengkap melihat tanggal batasnya.
+- SystemConfig `PembersihanAkun`: `aktif` (bawaan), `uji` (hanya dicatat di log, tidak menghapus), `mati`.
+  Bila ingin melihat dulu siapa yang akan terhapus, isi `uji` selama seminggu, cek Log Pengelolaan
+  (aksi `CLEANUP_UJI`), lalu ubah ke `aktif`.
+
+Sheet baru (dibuat otomatis): `PushTokens` (tersembunyi), `Pengumuman`, `ArsipAkunDihapus` (tersembunyi).
+
+## 8. Tahap berikutnya
+
+- Notifikasi push untuk versi iPhone/PWA (Web Push, iOS 16.4+).
 - Versi App Store/TestFlight (butuh akun Apple Developer).
 - Token CSS tahap 2 (blok CSS lama) dan mode gelap.
