@@ -1,0 +1,17 @@
+{
+  "appId": "id.terastower2.app",
+  "appName": "Teras Tower 2",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 3000,
+      "launchAutoHide": true,
+      "backgroundColor": "#F3FDFF",
+      "showSpinner": false
+    }
+  }
+}

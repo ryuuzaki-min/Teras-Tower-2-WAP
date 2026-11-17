@@ -1,0 +1,27 @@
+{
+  "name": "teras-tower-2-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Aplikasi warga Teras Tower 2 (Android, iPhone, PWA) dengan backend Google Apps Script",
+  "scripts": {
+    "build:web": "node tools/build-web.mjs",
+    "test": "node tools/test/backend.test.cjs",
+    "assets": "capacitor-assets generate --android --iconBackgroundColor '#FFFFFF' --splashBackgroundColor '#F3FDFF' --splashBackgroundColorDark '#0B2A33'",
+    "sync": "cap sync",
+    "test:e2e": "npm run build:web && python3 -I tools/test/client_e2e.py www /tmp/tt2-shots",
+    "icons": "python3 -I tools/make-icons.py ."
+  },
+  "dependencies": {
+    "@capacitor/android": "8.6.2",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/app-launcher": "8.0.1",
+    "@capacitor/browser": "8.0.5",
+    "@capacitor/core": "8.6.2",
+    "@capacitor/ios": "8.6.2",
+    "@capacitor/splash-screen": "8.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "4.0.0",
+    "@capacitor/cli": "8.6.2"
+  }
+}
