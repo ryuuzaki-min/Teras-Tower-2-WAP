@@ -22,7 +22,9 @@ const P = {
   register() { window.__push.calls.push('register'); setTimeout(() => (window.__push.listeners.registration || []).forEach(f => f({ value: 'fcmTOKENabcdefghijklmnopqrstuvwxyz123' })), 50); return Promise.resolve(); }
 };
 window.__fire = function (name, payload) { (window.__push.listeners[name] || []).forEach(f => f(payload)); };
-window.Capacitor = { isNativePlatform: () => true, getPlatform: () => 'android', Plugins: { PushNotifications: P } };
+window.__opened = [];
+const AL = { openUrl(o) { window.__opened.push(o.url); return Promise.resolve({ completed: true }); } };
+window.Capacitor = { isNativePlatform: () => true, getPlatform: () => 'android', Plugins: { PushNotifications: P, AppLauncher: AL } };
 """
 
 state = {'calls': [], 'role': 'resident', 'profileComplete': True, 'pengumuman': None, 'sent': []}
@@ -88,6 +90,12 @@ with sync_playwright() as p:
     pg.evaluate("window.__fire('pushNotificationActionPerformed', { notification: { data: { page: 'riwayat' } } })")
     pg.wait_for_timeout(400)
     check('ketuk notifikasi membuka Riwayat Saya', pg.evaluate('currentPage') == 'riwayat', pg.evaluate('currentPage'))
+
+    # 3b. Notifikasi versi baru membawa tautan -> buka unduhan, bukan halaman
+    apk = 'https://github.com/ryuuzaki-min/Teras-Tower-2-WAP/releases/latest/download/TerasTower2.apk'
+    pg.evaluate("window.__fire('pushNotificationActionPerformed', { notification: { data: { page: 'beranda', url: '%s' } } })" % apk)
+    pg.wait_for_timeout(300)
+    check('ketuk notifikasi versi baru membuka tautan unduhan APK', pg.evaluate('window.__opened') == [apk] and pg.evaluate('currentPage') == 'riwayat', pg.evaluate('window.__opened'))
 
     # 4. Logout: token dilepas SEBELUM sesi diakhiri
     state['calls'].clear()

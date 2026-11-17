@@ -1,4 +1,4 @@
-# Teras Tower 2 — Aplikasi Android, iPhone & Web (v12)
+# Teras Tower 2 — Aplikasi Android, iPhone & Web (v13)
 
 Satu sumber kode untuk tiga cara pakai:
 

@@ -1,5 +1,5 @@
 // ===================================================================
-// TERAS TOWER 2 - Backend Apps Script (v12 - NOTIFIKASI PUSH + PEMBERSIHAN AKUN)
+// TERAS TOWER 2 - Backend Apps Script (v13 - LAPORAN RILIS OTOMATIS)
 // ===================================================================
 
 // SUPER ADMIN CREDENTIALS
@@ -653,7 +653,9 @@ const TT2_API_NAMES = [
   'getMyKepuasanThisWeek', 'submitKepuasan', 'getAllKepuasanAdmin', 'getKontakData', 'getAppClock', 'getAgendaCalendar',
   'saveAgenda', 'setAgendaActive', 'submitAgendaProposal', 'getAgendaManagementData', 'reviewAgendaProposal',
   // v12
-  'registerPushToken', 'unregisterPushToken', 'sendPengumuman', 'getPengumumanTerbaru', 'getPengumumanAdmin'
+  'registerPushToken', 'unregisterPushToken', 'sendPengumuman', 'getPengumumanTerbaru', 'getPengumumanAdmin',
+  // v13: dipanggil workflow GitHub (dijaga RELEASE_SECRET, bukan sesi)
+  'reportApkRelease'
 ];
 
 // Peta nama -> fungsi dibuat saat dipanggil, sehingga urutan deklarasi tidak berpengaruh.
@@ -3716,6 +3718,7 @@ function getFcmAccessToken_(forceRefresh) {
 }
 
 function resolvePushRecipients_(target, allTokens, adminSet) {
+  if (target.platform) allTokens = allTokens.filter(function (item) { return (item.platform || 'android') === target.platform; });
   if (target.all) return allTokens;
   if (target.admins) return allTokens.filter(function (item) { return adminSet[item.username.toLowerCase()]; });
   const wanted = {};
@@ -3725,6 +3728,7 @@ function resolvePushRecipients_(target, allTokens, adminSet) {
 
 function buildFcmMessage_(token, message) {
   const data = { page: String(message.page || 'beranda') };
+  if (message.url && /^https:\/\//.test(message.url)) data.url = String(message.url);
   return {
     message: {
       token: token,
@@ -3867,4 +3871,64 @@ function formatAgendaDateForPush_(date, startTime) {
   const label = isNaN(parsed.getTime()) ? String(date || '') : Utilities.formatDate(parsed, 'Asia/Jakarta', 'dd/MM/yyyy');
   const time = String(startTime || '').trim();
   return label + (time ? ' pukul ' + time : '');
+}
+
+// ===================================================================
+// v13 — LAPORAN RILIS APK OTOMATIS DARI GITHUB
+// -------------------------------------------------------------------
+// Workflow GitHub memanggil reportApkRelease setelah APK terlampir di rilis.
+// Fungsi ini:
+//   1. menulis ApkVersiTerbaru & ApkTautanUnduh di SystemConfig,
+//   2. mengirim notifikasi "Versi baru tersedia" ke semua HP Android
+//      (warga DAN admin) yang memasang aplikasi.
+// Keamanan: GitHub TIDAK memegang akun Google siapa pun. Ia hanya tahu satu
+// kata sandi rilis (Script Property RELEASE_SECRET = GitHub Secret
+// TT2_RELEASE_SECRET). Tautan unduhan tidak bisa diatur pemanggil (selalu
+// tautan tetap di bawah), dan versi harus lebih baru dari yang tercatat,
+// jadi kata sandi yang bocor paling jauh hanya bisa memicu satu notifikasi.
+// ===================================================================
+const APK_DOWNLOAD_URL = 'https://github.com/ryuuzaki-min/Teras-Tower-2-WAP/releases/latest/download/TerasTower2.apk';
+
+function compareVersionStrings_(a, b) {
+  const pa = String(a || '0').split('.').map(Number);
+  const pb = String(b || '0').split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  return 0;
+}
+
+function constantTimeEquals_(a, b) {
+  a = String(a || ''); b = String(b || '');
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  return diff === 0;
+}
+
+function reportApkRelease(payload) {
+  const expected = PropertiesService.getScriptProperties().getProperty('RELEASE_SECRET');
+  if (!expected || expected.length < 24) return { success: false, message: 'RELEASE_SECRET belum diatur di Script Properties.' };
+  if (!constantTimeEquals_(payload && payload.secret, expected)) {
+    writeAuditLog_('LAPORAN_RILIS_DITOLAK', 'github', '', 'Kata sandi rilis salah');
+    return { success: false, message: 'Kata sandi rilis salah.' };
+  }
+  const version = String(payload && payload.version || '').trim();
+  if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(version)) return { success: false, message: 'Format versi harus angka.angka.angka.' };
+  return withScriptLock_(function () {
+    const current = String(getSystemConfig_().ApkVersiTerbaru || '').trim();
+    if (current && compareVersionStrings_(version, current) <= 0) {
+      return { success: true, changed: false, message: 'Versi ' + version + ' tidak lebih baru dari ' + current + '; tidak ada yang diubah.' };
+    }
+    upsertSystemConfigValue_('ApkVersiTerbaru', version);
+    upsertSystemConfigValue_('ApkTautanUnduh', APK_DOWNLOAD_URL);
+    writeAuditLog_('RILIS_APK', 'github', version, APK_DOWNLOAD_URL);
+    queuePush_({ all: true, platform: 'android' }, {
+      title: '⬆️ Versi baru Teras Tower 2',
+      body: 'Versi ' + version + ' sudah tersedia. Ketuk untuk mengunduh, lalu pasang di atas aplikasi lama.',
+      page: 'beranda',
+      url: APK_DOWNLOAD_URL
+    });
+    return { success: true, changed: true, version: version, url: APK_DOWNLOAD_URL };
+  });
 }

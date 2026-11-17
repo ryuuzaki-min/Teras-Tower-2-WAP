@@ -224,6 +224,8 @@
     });
     P.addListener('pushNotificationActionPerformed', function (action) {
       var data = action && action.notification && action.notification.data;
+      // v13: notifikasi versi baru membawa tautan unduhan APK -> buka langsung.
+      if (data && data.url && /^https:\/\//.test(data.url)) { openExternal(data.url); return; }
       openPushPage(data && data.page);
     });
     return P;

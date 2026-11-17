@@ -71,8 +71,11 @@ Ekstrak zip proyek, lalu seret seluruh isinya (termasuk folder `.github`) ke **U
 2. **Releases > Draft a new release > Choose a tag** `v1.0.0` > **Publish release**.
    Workflow menolak bila tag dan versi berbeda.
 3. APK + `.sha256` otomatis terlampir di rilis tersebut.
-4. Isi SystemConfig `ApkVersiTerbaru` dan `ApkTautanUnduh` (tautan halaman rilis).
+4. SystemConfig `ApkVersiTerbaru`/`ApkTautanUnduh` dan notifikasi "versi baru" diisi otomatis
+   oleh workflow (bagian 8). Tidak perlu diisi manual.
 5. Ikuti checklist di dokumen Lynk.id.
+
+Nama tag harus `v` + versi, tanpa titik di antaranya: `v1.1.0` benar, `v.1.1.0` ditolak.
 
 ## 6. Mengganti logo
 
@@ -123,7 +126,46 @@ Teks notifikasi aspirasi dibuat umum (tanpa nama/isi) karena tampil di layar kun
 
 Sheet baru (dibuat otomatis): `PushTokens` (tersembunyi), `Pengumuman`, `ArsipAkunDihapus` (tersembunyi).
 
-## 8. Tahap berikutnya
+## 8. Pembaruan v13 — rilis otomatis & satu tautan unduhan
+
+**Tautan unduhan tetap (selamanya, selalu versi terbaru):**
+`https://github.com/ryuuzaki-min/Teras-Tower-2-WAP/releases/latest/download/TerasTower2.apk`
+
+Setiap rilis bertag `vX.Y.Z` kini otomatis:
+1. melampirkan `TerasTower2.apk` (nama tetap) selain file bernomor versi;
+2. menulis `ApkVersiTerbaru` dan `ApkTautanUnduh` di SystemConfig;
+3. mengirim notifikasi "Versi baru Teras Tower 2" ke semua HP Android, warga dan admin.
+   Ketuk notifikasi = langsung mengunduh APK. Spanduk di dalam aplikasi tetap muncul
+   untuk yang menolak notifikasi.
+
+Pengaturan sekali (kata sandi rilis ada di berkas RAHASIA):
+1. Apps Script > Project Settings > Script Properties > tambah `RELEASE_SECRET`.
+2. GitHub > Settings > Secrets and variables > Actions > New repository secret `TT2_RELEASE_SECRET`,
+   isi SAMA dengan langkah 1.
+3. Ganti `.github/workflows/build-apk.yml` dengan versi v13 (edit di github.com, tempel seluruh isi).
+4. Ganti 4 berkas Apps Script dengan `gas/` v13, lalu deploy **Versi baru**.
+
+GitHub tidak memegang akun Google siapa pun; ia hanya tahu kata sandi rilis. Kata sandi itu hanya
+bisa mencatat versi yang lebih baru dan tidak bisa mengubah tautan unduhan.
+
+## 9. Serah terima bila pengelola berganti
+
+Tidak ada yang perlu menyerahkan email atau kata sandi pribadinya. Setiap layanan bisa
+memindahkan kepemilikan ke akun lain:
+
+| Layanan | Cara memindahkan |
+| --- | --- |
+| Spreadsheet + Apps Script | Bagikan spreadsheet ke akun baru sebagai Editor, lalu **Bagikan > (nama akun baru) > Transfer kepemilikan**. Apps Script yang terikat ikut pindah, termasuk Script Properties. |
+| Pemicu & deployment | Pemicu milik akun lama berhenti saat aksesnya dicabut. Akun baru menjalankan `aktifkanOtomatisasiTT2` dan men-deploy versi baru. Bila URL `/exec` berubah, perbarui `app.config.json` lalu rilis APK baru. |
+| GitHub | Repo > Settings > **Transfer ownership** ke akun/organisasi baru. Periksa tab Secrets; isi ulang dari berkas RAHASIA bila kosong. Perbarui `APK_DOWNLOAD_URL` di Code.gs dan tautan Lynk.id bila nama pemilik berubah. |
+| Firebase | Project settings > **Users and permissions** > tambah akun baru sebagai Owner. |
+| Kunci APK | Serahkan `terastower2.keystore` dan berkas RAHASIA lewat jalur aman (flashdisk / Drive akun pengurus). |
+
+Saran: buat sekarang satu akun Google dan satu akun GitHub khusus "Pengurus Tower 2", pindahkan
+semuanya ke sana, dan pakai akun pribadi hanya sebagai admin tambahan. Serah terima berikutnya
+cukup mengganti siapa yang memegang akun pengurus itu.
+
+## 10. Tahap berikutnya
 
 - Notifikasi push untuk versi iPhone/PWA (Web Push, iOS 16.4+).
 - Versi App Store/TestFlight (butuh akun Apple Developer).

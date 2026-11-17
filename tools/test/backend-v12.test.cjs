@@ -290,4 +290,33 @@ test('tindak lanjut aspirasi: pengirim dikabari hanya saat status berubah', func
   assert.strictEqual(e.lockHeld(), 0);
 });
 
+test('v13 laporan rilis: sandi, versi naik, SystemConfig, notifikasi ke semua HP Android', function () {
+  const e = env({ admins: [['pengurus', 'h', 'Admin']] });
+  ['pengurus', 'budi'].forEach(function (u) { e.ctx.registerUser({ username: u, pin: '123456', pinConfirm: '123456' }); });
+  e.ctx.registerPushToken({ sessionToken: login(e, 'budi'), token: TOKEN('hpbudi'), platform: 'android' });
+  e.ctx.registerPushToken({ sessionToken: login(e, 'pengurus'), token: TOKEN('hpadmin'), platform: 'android' });
+  e.ctx.registerPushToken({ sessionToken: login(e, 'budi'), token: TOKEN('iphonebudi'), platform: 'ios' });
+  const call = function (args) { return JSON.parse(e.ctx.doPost({ postData: { contents: JSON.stringify({ fn: 'reportApkRelease', args: [args] }) } }).getContent()); };
+  assert.ok(/RELEASE_SECRET belum diatur/.test(call({ secret: 'x', version: '1.1.1' }).result.message));
+  e.props.RELEASE_SECRET = 'rahasia-rilis-uji-0123456789abcdef';
+  assert.strictEqual(call({ secret: 'salah', version: '1.1.1' }).result.success, false);
+  assert.strictEqual(call({ secret: 'rahasia-rilis-uji-0123456789abcdef', version: '1.1' }).result.success, false);
+  const ok = call({ secret: 'rahasia-rilis-uji-0123456789abcdef', version: '1.1.1', url: 'https://jahat.example/apk' }).result;
+  assert.strictEqual(ok.success, true); assert.strictEqual(ok.changed, true);
+  const cfg = e.ctx.getSystemConfig_();
+  assert.strictEqual(cfg.ApkVersiTerbaru, '1.1.1');
+  assert.strictEqual(cfg.ApkTautanUnduh, 'https://github.com/ryuuzaki-min/Teras-Tower-2-WAP/releases/latest/download/TerasTower2.apk');
+  deq(sentTo(e), [TOKEN('hpadmin'), TOKEN('hpbudi')]);
+  const msg = JSON.parse(fcmSends(e)[0].params.payload).message;
+  assert.strictEqual(msg.data.url, cfg.ApkTautanUnduh, 'tautan dari pemanggil harus diabaikan');
+  assert.ok(/1\.1\.1/.test(msg.notification.body));
+  const n = fcmSends(e).length;
+  const same = call({ secret: 'rahasia-rilis-uji-0123456789abcdef', version: '1.1.1' }).result;
+  assert.strictEqual(same.changed, false);
+  assert.strictEqual(call({ secret: 'rahasia-rilis-uji-0123456789abcdef', version: '1.0.9' }).result.changed, false);
+  assert.strictEqual(fcmSends(e).length, n, 'versi sama/lebih lama tidak boleh mengirim notifikasi lagi');
+  assert.strictEqual(call({ secret: 'rahasia-rilis-uji-0123456789abcdef', version: '1.10.0' }).result.changed, true, '1.10.0 > 1.1.1');
+  assert.strictEqual(e.lockHeld(), 0);
+});
+
 console.log('\n' + passed + ' uji backend v12 lulus');
