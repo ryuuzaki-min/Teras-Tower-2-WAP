@@ -16,6 +16,7 @@
 #     TT2_KEYSTORE_PASSWORD  sandi keystore
 #     TT2_KEY_ALIAS          alias kunci (mis. terastower2)
 #     TT2_KEY_PASSWORD       sandi kunci
+#     TT2_RELEASE_SECRET     kata sandi rilis (sama dengan Script Property RELEASE_SECRET)
 #   Pages (Settings > Pages > Source: GitHub Actions) — untuk versi iPhone/PWA
 #
 # Tanpa secret keystore, workflow tetap jalan tetapi menghasilkan APK DEBUG
@@ -129,6 +130,9 @@ jobs:
           fi
           cp "$SRC" "dist/$NAME"
           (cd dist && sha256sum "$NAME" > "$NAME.sha256")
+          # Salinan bernama tetap: tautan .../releases/latest/download/TerasTower2.apk
+          # selalu mengunduh versi terbaru (dipakai di Lynk.id & pemberitahuan aplikasi).
+          if [ "$TT2_SIGNED" = "1" ]; then cp "$SRC" dist/TerasTower2.apk; fi
           echo "APK_NAME=$NAME" >> "$GITHUB_ENV"
           cat "dist/$NAME.sha256"
           if [ "$TT2_SIGNED" = "1" ]; then
@@ -152,6 +156,24 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" dist/* --title "Teras Tower 2 ${GITHUB_REF_NAME}" --notes "$NOTES"
           fi
+
+      # v13: catat versi di SystemConfig & kirim notifikasi "versi baru" ke semua HP.
+      # Hanya memakai kata sandi rilis (secret TT2_RELEASE_SECRET), bukan akun Google.
+      - name: Laporkan rilis ke Apps Script
+        if: startsWith(github.ref, 'refs/tags/v') && env.TT2_SIGNED == '1'
+        env:
+          RELEASE_SECRET: ${{ secrets.TT2_RELEASE_SECRET }}
+        run: |
+          if [ -z "$RELEASE_SECRET" ]; then
+            echo "::warning::Secret TT2_RELEASE_SECRET belum ada; SystemConfig tidak diperbarui otomatis."
+            exit 0
+          fi
+          URL=$(node -p "require('./app.config.json').apiUrl")
+          BODY=$(node -e "process.stdout.write(JSON.stringify({fn:'reportApkRelease',args:[{secret:process.env.RELEASE_SECRET,version:process.env.TT2_VERSION_NAME}]}))")
+          # POST lalu ikuti pengalihan Apps Script (curl berpindah ke GET secara otomatis).
+          RESULT=$(curl -sSL --max-time 60 -H 'Content-Type: text/plain;charset=utf-8' --data "$BODY" "$URL")
+          echo "$RESULT"
+          echo "$RESULT" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{let r;try{r=JSON.parse(d)}catch(e){console.log('::warning::Jawaban Apps Script bukan JSON (sudah dideploy v13?)');process.exit(0)}if(!r.ok||!r.result||!r.result.success){console.log('::warning::Laporan rilis ditolak: '+((r.result&&r.result.message)||r.error));}})"
 
   pwa:
     name: Versi iPhone/PWA (GitHub Pages)
