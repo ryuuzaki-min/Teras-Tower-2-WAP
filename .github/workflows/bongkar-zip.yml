@@ -6,6 +6,10 @@
 # menghapus zip-nya, menyimpan hasilnya sebagai commit, lalu menjalankan
 # "Build APK & PWA".
 #
+# v16: bila isi zip terbungkus SATU folder (mis. teras-tower-2-app/...),
+# isinya otomatis diangkat ke akar repo. Folder nyasar dari unggahan lama
+# yang terbungkus juga dibersihkan.
+#
 # Catatan: berkas di dalam folder .github/workflows tidak bisa diubah lewat
 # zip (dibatasi GitHub). Ubah berkas workflow langsung di github.com.
 # ===================================================================
@@ -28,20 +32,47 @@ jobs:
 
       - name: Bongkar zip ke akar repo
         run: |
-          shopt -s nullglob
+          shopt -s nullglob dotglob
           zips=( *.zip )
           if [ ${#zips[@]} -ne 1 ]; then
             echo "::error::Harus ada tepat satu file .zip di akar repo (ditemukan ${#zips[@]})."
             exit 1
           fi
           ZIP="${zips[0]}"
-          if unzip -Z1 "$ZIP" | grep -qE '^\.github/workflows/'; then
-            echo "::warning::Isi .github/workflows di dalam zip diabaikan (ubah langsung di github.com)."
+          TMP="$(mktemp -d)"
+          unzip -q -o "$ZIP" -d "$TMP"
+          SRC="$TMP"
+          entries=( "$TMP"/* )
+          # Zip terbungkus satu folder -> pakai isi folder itu sebagai akar.
+          if [ ${#entries[@]} -eq 1 ] && [ -d "${entries[0]}" ]; then
+            SRC="${entries[0]}"
+            echo "Isi zip terbungkus folder '$(basename "$SRC")'; diangkat ke akar repo."
+            # Bersihkan salinan nyasar dari unggahan terbungkus sebelumnya.
+            if [ -d "$(basename "$SRC")" ] && [ -f "$(basename "$SRC")/package.json" ]; then
+              git rm -rq "$(basename "$SRC")" || rm -rf "$(basename "$SRC")"
+              echo "Folder nyasar '$(basename "$SRC")/' dihapus dari repo."
+            fi
           fi
-          # Kode 11 = pola pengecualian tidak cocok (zip memang tanpa .github): bukan kesalahan.
-          unzip -o "$ZIP" -x '.github/workflows/*' -d . || [ $? -eq 11 ]
+          if [ -d "$SRC/.github/workflows" ]; then
+            echo "::warning::Isi .github/workflows di dalam zip diabaikan (ubah langsung di github.com)."
+            rm -rf "$SRC/.github/workflows"
+          fi
+          cp -a "$SRC"/. .
+          rm -rf "$TMP"
+          # Hapus salinan proyek yang tersarang di subfolder (sisa unggahan terbungkus),
+          # dikenali dari adanya package.json + capacitor.config.json di subfolder itu.
+          if [ -f package.json ] && [ -f capacitor.config.json ]; then
+            for d in */; do
+              d="${d%/}"
+              if [ -f "$d/package.json" ] && [ -f "$d/capacitor.config.json" ]; then
+                git rm -rq "$d" 2>/dev/null || true; rm -rf "$d"
+                echo "Salinan proyek tersarang '$d/' dihapus."
+              fi
+            done
+          fi
           git rm -q --cached "$ZIP" || true
           rm -f "$ZIP"
+          if [ -f package.json ]; then echo "Versi package.json sekarang: $(node -p "require('./package.json').version")"; fi
 
       - name: Simpan sebagai commit
         run: |
