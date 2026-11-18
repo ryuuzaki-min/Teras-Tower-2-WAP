@@ -1,0 +1,21 @@
+Latar tombol/tab teks putih -> --color-primary-strong: 5 aturan
+CSS lama: warna diganti token sesuai konteks (69 warna berbeda):
+  background:--color-danger          <- #b34747 #c0392b #e53935 #e74c3c
+  background:--color-danger-bg       <- #ffe1e1 #ffe3e0 #fff0f0 #fffafa
+  background:--color-pastel-200      <- #e1f5fe
+  background:--color-success-bg      <- #dff7e5 #e5f5ed #e8f5e9 #eefaf1
+  background:--color-surface         <- #fff
+  background:--color-surface-muted   <- #edf1f2 #eef1f2 #f0f0f0 #f0f3f4 #f5f5f5
+  background:--color-warning-bg      <- #fff0d4 #fff3e0 #fff6e0 #fff7df #fff8e8 #fff9e9
+  border:--color-border              <- #d5dde0 #edf1f2
+  border:--color-danger-border       <- #ffb3b3 #ffc0c0
+  border:--color-success-border      <- #b9e5c2
+  border:--color-warning-border      <- #ffcc80 #ffe0a3 #ffe9a8
+  color:--color-danger               <- #a33b32 #c0392b
+  color:--color-primary-deep         <- #087b55
+  color:--color-success              <- #1e8449 #258044 #2e7d32
+  color:--color-text                 <- #555 #55727b #596a70 #666 #66747a #68757a #68767b
+  color:--color-text-muted           <- #69777d #6d7c83 #888 #8a969c #8b969c #999 #9aa5ab #a3aab0 #c0d0d5
+  color:--color-text-strong          <- #1a1a1a #25464f #263d43 #333 #33464c #444
+  color:--color-warning              <- #7a5c00 #875b0b #8a6200 #8a6500 #9a6500 #a87800 #ad7100 #e65100
+Dibiarkan (sengaja): background: #d2eddf #d8dde0 #e0e0e0 #e5f4ff #ffe0b2 #fff0c2 #fff1c9; border: #a5d6a7 #fff; color: #0277bd #176b91 #fff; filter: #d29b00; outline: #e2a325

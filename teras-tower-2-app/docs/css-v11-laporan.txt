@@ -1,0 +1,25 @@
+Blok Jelajah/Kalender/Perlu Tindakan: 260 warna hex diganti token
+  --color-border             <- #b9dcd3 #cbd4d2 #d5dfe0 #d7e4e7 #d7e5e2 #d8e7e3 #d8e9e4 #d9d7cc #d9e9e5 #dae5e4 #dce8e5 #dce9e6 #dcebe7 #e0e8e8 #e0ebea #e0eeeb #e1d9c8 #e1ece9 #e2eeeb #e3ecea #e3eeeb #e5eceb #e6e5df
+  --color-danger             <- #9c493c #9f2e2e #a33f35 #a34438 #a44236 #a53e33 #c04e4e
+  --color-danger-bg          <- #ffe9e7 #fff0ed #fff4f2 #fff5f4 #fffaf9
+  --color-danger-border      <- #df9292 #e2c7c2 #f0c5c0 #f1caca
+  --color-pastel-100         <- #eff9f6 #f0f8f6 #f3faf8 #f3faf9 #f4faf8 #f4fafa #f4fbf9 #f4fbfb #f8fcfb #fbfefd
+  --color-pastel-200         <- #e6f6f1 #e8f7f2 #edf8f7 #eef9f8 #eff8f6
+  --color-primary            <- #59bca4
+  --color-primary-deep       <- #117b69 #16896f #174b53 #17636a #237d68 #287564 #2b8a91 #2d8995 #307c70 #327579 #38a88d
+  --color-primary-soft       <- #80c9b7 #8dcfc1 #95d8c8 #99d6c8 #9ed5c9 #a5d8cc #abd9ce
+  --color-success            <- #237b57 #26754b #267a4d #278457
+  --color-success-bg         <- #e5f5ec #e5f5ef #e5f6ee #e6f7ef #e9f8f2 #eef9f3 #eff9f5 #f0faf6 #f6fbf9 #fcfefd
+  --color-success-border     <- #b8dfd0 #bfe3d2
+  --color-surface            <- #fff
+  --color-surface-muted      <- #e4efec #e6efed #e8efee #edf0f0 #eef1ef #eef3f2 #f0efe8 #f0f4f4 #f0f5f4 #f1f1ef #f2eee7 #f4f6f3 #f6f5f1 #f7f6f1 #f7f6f2 #f7fbf8 #f8f8f5 #f8f8f6 #f9fcfb #fbfbfa
+  --color-text               <- #3f6d66 #40585e #42585d #465c61 #476067 #496167 #4c6065 #4c656a #4d5b5d #52656b #52696b #536669 #53666b #586970 #586b70 #596d72 #5d7074 #60777b #657170 #665b4a #68777a #687a7d #7b6d55 #896f4c #94784d
+  --color-text-muted         <- #56a1a5 #6b7d80 #6d7e80 #718083 #718087 #718187 #728083 #72adb3 #75848a #768589 #77878b #788589 #78888b #78898d #7a8788 #7b898d #7e8587 #819094 #829094 #849094 #879093 #879398 #879598 #8b979a #8eb9ae
+  --color-text-strong        <- #243f45 #253f45 #26383d #263f42 #284b50 #2f4245 #315659 #31565a #334a50 #344f54 #34545a #35494b #354b51 #355159 #36545a
+  --color-warning            <- #825c24 #96712c #97602e #996216 #a34b24
+  --color-warning-accent     <- #e5a21a #e7a33d #f0cb76 #f3a941
+  --color-warning-bg         <- #fff3dd #fff4dd #fff4e5 #fff8e5 #fff9e9 #fff9f1 #fffdf8
+  --color-warning-border     <- #efd3b5
+Ukuran huruf: 12 aturan 8–9px -> 10px, 32 aturan 10px -> 11px
+100vh diberi cadangan 100dvh: 4 aturan
+Area aman atas: header, tombol kanan atas, dan jarak konten utama
