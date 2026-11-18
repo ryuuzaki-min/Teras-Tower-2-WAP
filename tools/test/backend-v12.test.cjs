@@ -39,7 +39,8 @@ function fakeHttp(url, params) {
 function env(opts) {
   opts = opts || {};
   const e = createContext({
-    codePath: CODE, now: START, http: fakeHttp,
+    codePath: CODE, now: START, maps: opts.maps,
+    http: function (url, params) { return (opts.http && opts.http(url, params)) || fakeHttp(url, params); },
     sheets: {
       WargaBaru: [WARGA_HEADERS].concat(opts.warga || []),
       Admins: [['Username', 'PIN', 'Keterangan']].concat(opts.admins || []),
@@ -317,6 +318,234 @@ test('v13 laporan rilis: sandi, versi naik, SystemConfig, notifikasi ke semua HP
   assert.strictEqual(fcmSends(e).length, n, 'versi sama/lebih lama tidak boleh mengirim notifikasi lagi');
   assert.strictEqual(call({ secret: 'rahasia-rilis-uji-0123456789abcdef', version: '1.10.0' }).result.changed, true, '1.10.0 > 1.1.1');
   assert.strictEqual(e.lockHeld(), 0);
+});
+
+test('v14: versi yang telanjur jadi TANGGAL di sheet tidak memblokir rilis & spanduk', function () {
+  const e = env({ config: [['ApkVersiTerbaru', new Date(Date.UTC(2000, 1, 1))], ['ApkTautanUnduh', 'https://github.com/x']] });
+  e.props.RELEASE_SECRET = 'rahasia-rilis-uji-0123456789abcdef';
+  assert.strictEqual(e.ctx.getBootstrap().systemConfig.ApkVersiTerbaru, '', 'tanggal tidak boleh dikirim sebagai versi');
+  const call = function (v) { return JSON.parse(e.ctx.doPost({ postData: { contents: JSON.stringify({ fn: 'reportApkRelease', args: [{ secret: 'rahasia-rilis-uji-0123456789abcdef', version: v }] }) } }).getContent()).result; };
+  assert.strictEqual(call('1.2.1').changed, true, 'rilis harus tetap tercatat');
+  const boot = e.ctx.getBootstrap().systemConfig;
+  assert.strictEqual(boot.ApkVersiTerbaru, '1.2.1');
+  assert.strictEqual(boot.ApkTautanUnduh, 'https://github.com/ryuuzaki-min/Teras-Tower-2-WAP/releases/latest/download/TerasTower2.apk');
+  assert.strictEqual(e.props.APK_LATEST_VERSION, '1.2.1');
+  assert.strictEqual(e.ctx.getSystemConfig_().ApkVersiTerbaru, '1.2.1', 'sheet menyimpan teks');
+  assert.strictEqual(call('1.2.1').changed, false);
+});
+
+test('v15: kapasitas spreadsheet - peringatan 75%/90% dikirim sekali per tingkat', function () {
+  const e = env({ warga: [['admin1', '123456', 'Admin', '0812', 'Penghuni', '3', '01', 'admin', 'Ya']], admins: [['admin1', '123456', '']] });
+  e.ctx.registerPushToken({ sessionToken: login(e, 'admin1'), token: TOKEN('hpadmin'), platform: 'android' });
+  let cap = e.ctx.checkSpreadsheetCapacity_();
+  assert.strictEqual(cap.level, 'ok'); assert.strictEqual(fcmSends(e).length, 0);
+  e.sheets.WargaBaru.maxRows = 300000; // 300rb x 26 = 7,8 juta sel
+  cap = e.ctx.checkSpreadsheetCapacity_();
+  assert.strictEqual(cap.level, 'waspada'); assert.strictEqual(cap.largest, 'WargaBaru');
+  assert.strictEqual(fcmSends(e).length, 1, 'admin dikabari saat masuk 75%');
+  e.ctx.checkSpreadsheetCapacity_();
+  assert.strictEqual(fcmSends(e).length, 1, 'tidak berulang pada tingkat yang sama');
+  e.sheets.WargaBaru.maxRows = 360000;
+  assert.strictEqual(e.ctx.checkSpreadsheetCapacity_().level, 'kritis');
+  assert.strictEqual(fcmSends(e).length, 2, 'dikabari lagi saat 90%');
+  const sum = e.ctx.getNotificationSummary(login(e, 'admin1'));
+  assert.strictEqual(sum.kapasitas.level, 'kritis');
+});
+
+test('v15: hari libur Google + koreksi manual sheet HariLibur', function () {
+  const ics = 'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261225\r\nSUMMARY:Hari Raya Natal\r\nDESCRIPTION:Hari libur nasional\r\nEND:VEVENT\r\n' +
+    'BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261112\r\nSUMMARY:Hari Ayah\r\nDESCRIPTION:Hari peringatan\\nUntuk menyembunyikan\r\nEND:VEVENT\r\n' +
+    'BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261110\r\nSUMMARY:Hari Pahlawan\r\nDESCRIPTION:Hari peringatan\r\nEND:VEVENT\r\nEND:VCALENDAR';
+  const e = createContext({ codePath: CODE, now: START,
+    http: function (url) { return url.indexOf('calendar.google.com') >= 0 ? { code: 200, body: ics } : { code: 500, body: '' }; },
+    sheets: { WargaBaru: [WARGA_HEADERS, ['budi', '123456', 'Budi', '0812', 'Penghuni', '3', '01', 'resident', 'Ya']], Admins: [['Username', 'PIN', 'Keterangan']], SystemConfig: [['KEY', 'VALUE']], AppInfo: [['Deskripsi', 'Penutup'], ['x', 'y']],
+      HariLibur: [['Tanggal', 'Nama', 'Jenis'], ['2026-11-10', '', 'Hapus'], ['2026-11-20', 'Cuti bersama uji', 'Libur']] } });
+  const token = login(e, 'budi');
+  const nov = e.ctx.getAgendaCalendar(token, 2026, 11).holidays;
+  deq(nov, [{ date: '2026-11-12', name: 'Hari Ayah', type: 'peringatan' }, { date: '2026-11-14', name: 'Hari Diabetes Sedunia', type: 'internasional' },
+    { date: '2026-11-19', name: 'Hari Toilet Sedunia', type: 'internasional' }, { date: '2026-11-20', name: 'Cuti bersama uji', type: 'libur' }]);
+  // 20 Nov (Hari Anak Sedunia) tidak muncul karena tanggal itu sudah libur; 10 Nov dihapus manual.
+  const dec = e.ctx.getAgendaCalendar(token, 2026, 12).holidays;
+  deq(dec.filter(function (x) { return x.type === 'libur'; }), [{ date: '2026-12-25', name: 'Hari Raya Natal', type: 'libur' }]);
+  deq(dec.filter(function (x) { return x.type === 'internasional'; }).map(function (x) { return x.date; }), ['2026-12-01', '2026-12-03', '2026-12-05', '2026-12-10']);
+  assert.strictEqual(e.http.calls.filter(function (c) { return c.url.indexOf('calendar.google.com') >= 0; }).length, 1, 'ICS diambil sekali lalu dari cache');
+});
+
+test('v15: kalender tetap jalan saat kalender Google gagal diambil', function () {
+  const e = env({ warga: [['budi', '123456', 'Budi', '0812', 'Penghuni', '3', '01', 'resident', 'Ya']] });
+  const r = e.ctx.getAgendaCalendar(login(e, 'budi'), 2026, 12);
+  assert.strictEqual(r.success, true);
+  assert.ok(r.holidays.every(function (x) { return x.type === 'internasional'; }), 'hanya hari internasional bawaan');
+});
+
+test('v15: nomor penting menyimpan kategori di kolom baru tanpa mengganggu kolom lain', function () {
+  const e = env({ warga: [['admin1', '123456', 'Admin', '0812', 'Penghuni', '3', '01', 'admin', 'Ya']], admins: [['admin1', '123456', '']] });
+  const ss = e.ctx.SpreadsheetApp.getActiveSpreadsheet();
+  const np = ss.insertSheet('NomorPenting'); np.appendRow(['Nama', 'Nomor', 'UpdatedAt']); np.appendRow(['Lama', '0811', 'x']);
+  const r = e.ctx.saveNomorPenting({ sessionToken: login(e, 'admin1'), data: [{ nama: 'Satpam', nomor: '0812', kategori: 'Keamanan' }, { nama: 'Ojek', nomor: '0813', kategori: 'aneh' }] });
+  assert.strictEqual(r.success, true, r.message);
+  deq(np.data[0], ['Nama', 'Nomor', 'UpdatedAt', 'Kategori']);
+  assert.strictEqual(np.data[1][3], 'Keamanan'); assert.strictEqual(np.data[2][3], 'Lainnya');
+  assert.strictEqual(e.lockHeld(), 0);
+});
+
+test('v15: Penyimpanan Data - perkiraan baris per sheet, khusus Super Admin', function () {
+  const e = env({ warga: [['boss', '123456', 'Boss', '0812', 'Penghuni', '3', '01', 'admin', 'Ya'], ['budi', '123456', 'Budi', '0812', 'Penghuni', '3', '01', 'resident', 'Ya']],
+    admins: [['boss', '123456', 'superadmin']] });
+  const budiToken = login(e, 'budi');
+  assert.throws(function () { e.ctx.getStorageInfo(budiToken); }, 'warga tidak boleh');
+  const realSession = e.ctx.requireSession_;
+  e.ctx.requireSession_ = function (token, roles) { assert.deepStrictEqual(Array.from(roles), ['super_admin']); return { username: 'boss', role: 'super_admin' }; };
+  const info = e.ctx.getStorageInfo('token-super');
+  e.ctx.requireSession_ = realSession;
+  const w = info.sheets.filter(function (x) { return x.name === 'WargaBaru'; })[0];
+  assert.strictEqual(w.dataRows, 2);
+  assert.strictEqual(w.rowsAvailable, (1000 - 3) + Math.floor(info.freeCells / 26));
+  assert.ok(info.checkedAt && info.percent > 0);
+});
+
+test('v15: FAQ - isi bawaan, disalin ke sheet saat diubah pertama kali, hak per peran', function () {
+  const e = env({ warga: [['admin1', '123456', 'Admin', '0812', 'Penghuni', '3', '01', 'admin', 'Ya'], ['budi', '123456', 'Budi', '0812', 'Penghuni', '3', '01', 'resident', 'Ya']], admins: [['admin1', '123456', '']] });
+  const tWarga = login(e, 'budi'), tAdmin = login(e, 'admin1');
+  const warga = e.ctx.getFaq(tWarga);
+  assert.ok(warga.items.length > 30 && warga.items.every(function (x) { return x.peran === 'warga'; }), 'warga hanya melihat FAQ umum');
+  assert.strictEqual(warga.canEdit, false);
+  assert.throws(function () { e.ctx.saveFaqItem({ sessionToken: tWarga, bagian: 'X', peran: 'warga', pertanyaan: 'Pertanyaan?', jawaban: 'Jawaban.' }); });
+  const admin = e.ctx.getFaq(tAdmin);
+  assert.ok(admin.items.some(function (x) { return x.peran === 'admin'; }) && !admin.items.some(function (x) { return x.peran === 'super'; }));
+  assert.strictEqual(e.ctx.SpreadsheetApp.getActiveSpreadsheet().getSheetByName('FAQ'), null, 'belum ada sheet sebelum diubah');
+  // ubah item bawaan -> isi bawaan disalin, item berubah
+  const first = admin.items[0];
+  let r = e.ctx.saveFaqItem({ sessionToken: tAdmin, id: first.id, bagian: first.bagian, peran: 'warga', pertanyaan: 'Apa itu aplikasi Teras?', jawaban: 'Aplikasi warga Tower 2.' });
+  assert.strictEqual(r.success, true, r.message);
+  const sheet = e.sheets.FAQ; assert.ok(sheet && sheet.data.length - 1 === e.ctx.faqDefaultItems_().length, 'semua isi bawaan tersalin');
+  assert.strictEqual(e.ctx.getFaq(tWarga).items[0].pertanyaan, 'Apa itu aplikasi Teras?');
+  // admin tidak boleh membuat FAQ khusus super admin
+  r = e.ctx.saveFaqItem({ sessionToken: tAdmin, bagian: 'Rahasia', peran: 'super', pertanyaan: 'Pertanyaan super?', jawaban: 'Jawaban super.' });
+  assert.strictEqual(r.success, false);
+  // tambah, geser, hapus
+  r = e.ctx.saveFaqItem({ sessionToken: tAdmin, bagian: 'Akun & masuk', peran: 'warga', pertanyaan: 'Bisakah dua HP satu akun?', jawaban: 'Bisa, masuk dengan username yang sama.' });
+  assert.strictEqual(r.success, true, r.message);
+  let akun = e.ctx.getFaq(tWarga).items.filter(function (x) { return x.bagian === 'Akun & masuk'; });
+  assert.strictEqual(akun[akun.length - 1].id, r.id, 'item baru di akhir bagiannya');
+  assert.strictEqual(e.ctx.moveFaqItem({ sessionToken: tAdmin, id: r.id, direction: -1 }).success, true);
+  akun = e.ctx.getFaq(tWarga).items.filter(function (x) { return x.bagian === 'Akun & masuk'; });
+  assert.strictEqual(akun[akun.length - 2].id, r.id, 'naik satu');
+  assert.strictEqual(e.ctx.deleteFaqItem({ sessionToken: tAdmin, id: r.id }).success, true);
+  assert.ok(!e.ctx.getFaq(tWarga).items.some(function (x) { return x.id === r.id; }));
+  assert.strictEqual(e.lockHeld(), 0);
+});
+
+// ---------------- v16 Jelajah ----------------
+function jelajahEnv(extra) {
+  extra = extra || {};
+  return env(Object.assign({
+    warga: [['admin1', '123456', 'Admin', '0812', 'Penghuni', '3', '01', 'admin', 'Ya'], ['budi', '123456', 'Budi', '0812', 'Penghuni', '3', '01', 'resident', 'Ya'], ['sari', '123456', 'Sari', '0813', 'Penghuni', '4', '02', 'resident', 'Ya']],
+    admins: [['admin1', '123456', '']]
+  }, extra));
+}
+const BAKSO_GEO = { status: 'OK', results: [{ formatted_address: 'Bakso Pak Kumis, Jl. Pademangan Raya No.12, Jakarta Utara, Indonesia', place_id: 'PLACE123', types: ['restaurant', 'establishment', 'point_of_interest'],
+  address_components: [{ long_name: 'Bakso Pak Kumis' }], geometry: { location: { lat: -6.1301, lng: 106.8402 } } },
+  { formatted_address: 'Jl. Kumis, Bekasi, Indonesia', place_id: 'P2', types: ['route'], address_components: [{ long_name: 'Jalan Kumis' }], geometry: { location: { lat: -6.30, lng: 107.0 } } },
+  { formatted_address: 'Paris, France', place_id: 'P3', types: ['locality'], address_components: [{ long_name: 'Paris' }], geometry: { location: { lat: 48.85, lng: 2.35 } } }] };
+
+test('v16 Jelajah: cari lokasi di aplikasi - hasil di luar Jabodetabek dibuang, cache & kuota', function () {
+  const e = jelajahEnv({ maps: { geocode: function () { return BAKSO_GEO; } } });
+  const t = login(e, 'budi');
+  let r = e.ctx.searchJelajahPlaces({ sessionToken: t, query: 'ba' });
+  assert.strictEqual(r.success, false, 'minimal 3 huruf');
+  r = e.ctx.searchJelajahPlaces({ sessionToken: t, query: 'bakso pak kumis' });
+  assert.strictEqual(r.success, true, r.message);
+  assert.strictEqual(r.results.length, 2, 'Paris dibuang');
+  deq(r.results[0], { nama: 'Bakso Pak Kumis', alamat: 'Jl. Pademangan Raya No.12, Jakarta Utara', lat: -6.1301, lng: 106.8402, placeId: 'PLACE123', tempat: true, jarak: null });
+  assert.strictEqual(e.ctx.__geoCalls[0], 'bakso pak kumis, Jakarta');
+  e.ctx.searchJelajahPlaces({ sessionToken: t, query: 'Bakso Pak Kumis' });
+  assert.strictEqual(e.ctx.__geoCalls.length, 1, 'query sama diambil dari cache');
+  // titik Tower 2 diatur -> ada jarak & urut terdekat
+  const ta = login(e, 'admin1');
+  assert.strictEqual(e.ctx.setJelajahTowerLocation({ sessionToken: ta, lat: 48, lng: 2 }).success, false, 'di luar wilayah');
+  assert.strictEqual(e.ctx.setJelajahTowerLocation({ sessionToken: ta, lat: -6.1330, lng: 106.8400 }).success, true);
+  r = e.ctx.searchJelajahPlaces({ sessionToken: t, query: 'bakso pak kumis' });
+  assert.ok(r.results[0].jarak > 300 && r.results[0].jarak < 350, 'jarak ' + r.results[0].jarak);
+  // kuota per akun
+  for (let i = 0; i < 40; i++) e.ctx.searchJelajahPlaces({ sessionToken: t, query: 'tempat ' + i });
+  r = e.ctx.searchJelajahPlaces({ sessionToken: t, query: 'tempat baru sekali' });
+  assert.strictEqual(r.success, false); assert.ok(/terlalu sering/.test(r.message));
+});
+test('v16 Jelajah: hanya admin yang boleh mengatur titik Tower 2', function () {
+  const e = jelajahEnv();
+  assert.throws(function () { e.ctx.setJelajahTowerLocation({ sessionToken: login(e, 'budi'), lat: -6.13, lng: 106.84 }); });
+  assert.strictEqual(e.ctx.getJelajahSekitar(login(e, 'budi')).tower, null, 'belum diatur -> tanpa jarak');
+});
+
+test('v16 Jelajah: kirim dengan titik peta (tanpa tautan), ubah oleh pengirim saja, favorit, laporan', function () {
+  const e = jelajahEnv();
+  const tb = login(e, 'budi'), ts = login(e, 'sari'), ta = login(e, 'admin1');
+  e.ctx.getJelajahSekitar(tb); // membuat sheet katalog bawaan
+  let r = e.ctx.submitJelajahRecommendation({ sessionToken: tb, kategori: 'Restoran', jenis: 'Bakso', namaLokasi: 'Bakso Pak Kumis', lat: -6.1301, lng: 106.8402, placeId: 'PLACE123', harga: 2, jamBuka: '10.00 – 22.00', tags: ['murah', 'buka malam', 'murah'] });
+  assert.strictEqual(r.success, true, r.message);
+  const id = r.id;
+  let list = e.ctx.getJelajahSekitar(tb).recommendations;
+  assert.strictEqual(list.length, 1);
+  assert.strictEqual(list[0].lat, -6.1301); assert.strictEqual(list[0].harga, 2); assert.strictEqual(list[0].jamBuka, '10.00 – 22.00');
+  assert.strictEqual(list[0].tags, 'murah, buka malam', 'tag ganda dibuang');
+  assert.ok(list[0].tautanMaps.indexOf('https://www.google.com/maps/search/?api=1&query=Bakso%20Pak%20Kumis&query_place_id=PLACE123') === 0, list[0].tautanMaps);
+  assert.strictEqual(list[0].mine, true);
+  assert.strictEqual(e.ctx.getJelajahSekitar(ts).recommendations[0].mine, false);
+  // validasi
+  assert.strictEqual(e.ctx.submitJelajahRecommendation({ sessionToken: tb, kategori: 'Restoran', jenis: 'Bakso', namaLokasi: 'X' }).success, false, 'tanpa lokasi ditolak');
+  assert.strictEqual(e.ctx.submitJelajahRecommendation({ sessionToken: tb, kategori: 'Restoran', jenis: 'Bakso', namaLokasi: 'X', lat: 48, lng: 2 }).success, false, 'di luar wilayah');
+  assert.strictEqual(e.ctx.submitJelajahRecommendation({ sessionToken: tb, kategori: 'Restoran', jenis: 'Bakso', namaLokasi: 'X', lat: -6.13, lng: 106.84, harga: 6 }).success, false, 'harga 1-5');
+  // ubah
+  const edit = { id: id, kategori: 'Restoran', jenis: 'Bakso', namaLokasi: 'Bakso Pak Kumis Asli', lat: -6.1302, lng: 106.8403, harga: 3 };
+  assert.strictEqual(e.ctx.updateJelajahRecommendation(Object.assign({ sessionToken: ts }, edit)).success, false, 'warga lain tidak boleh');
+  r = e.ctx.updateJelajahRecommendation(Object.assign({ sessionToken: tb }, edit));
+  assert.strictEqual(r.success, true, r.message);
+  list = e.ctx.getJelajahSekitar(tb).recommendations;
+  assert.strictEqual(list[0].namaLokasi, 'Bakso Pak Kumis Asli'); assert.strictEqual(list[0].harga, 3); assert.strictEqual(list[0].lat, -6.1302);
+  assert.strictEqual(e.ctx.updateJelajahRecommendation(Object.assign({ sessionToken: ta }, edit)).success, true, 'admin boleh');
+  // favorit
+  assert.strictEqual(e.ctx.toggleJelajahFavorite({ sessionToken: ts, recommendationId: id }).favorited, true);
+  assert.strictEqual(e.ctx.getJelajahSekitar(ts).recommendations[0].favorited, true);
+  assert.strictEqual(e.ctx.getJelajahSekitar(tb).recommendations[0].favorited, false, 'favorit per akun');
+  assert.strictEqual(e.ctx.toggleJelajahFavorite({ sessionToken: ts, recommendationId: id }).favorited, false);
+  // laporan -> push admin, sekali per akun sampai ditinjau
+  e.ctx.registerPushToken({ sessionToken: ta, token: TOKEN('hpadmin'), platform: 'android' });
+  const before = fcmSends(e).length;
+  r = e.ctx.submitJelajahReport({ sessionToken: ts, recommendationId: id, alasan: 'Tutup permanen', catatan: 'Sudah pindah' });
+  assert.strictEqual(r.success, true, r.message);
+  assert.strictEqual(fcmSends(e).length, before + 1, 'admin dikabari');
+  assert.strictEqual(e.ctx.submitJelajahReport({ sessionToken: ts, recommendationId: id, alasan: 'Tutup permanen' }).success, false, 'tidak dobel');
+  assert.strictEqual(e.ctx.submitJelajahReport({ sessionToken: ts, recommendationId: id, alasan: 'Alasan aneh' }).success, false);
+  const kelola = e.ctx.getKelolaJelajah(ta);
+  assert.strictEqual(kelola.reports.length, 1); assert.strictEqual(kelola.reports[0].namaLokasi, 'Bakso Pak Kumis Asli');
+  assert.strictEqual(e.ctx.resolveJelajahReport({ sessionToken: ta, id: kelola.reports[0].id }).success, true);
+  assert.strictEqual(e.ctx.getKelolaJelajah(ta).reports.length, 0);
+  assert.strictEqual(e.lockHeld(), 0);
+});
+
+test('v16 Jelajah: data lama dilengkapi titiknya dari tautan Maps (termasuk tautan pendek)', function () {
+  const e = jelajahEnv({ http: function (url) {
+    if (url === 'https://maps.app.goo.gl/abc123') return { code: 302, body: '', headers: { Location: 'https://www.google.com/maps/place/Warung/@-6.1250,106.8450,17z/data=!3d-6.1251!4d106.8451' } };
+    if (url === 'https://maps.app.goo.gl/rusak') return { code: 404, body: '' };
+    return null;
+  } });
+  const ta = login(e, 'admin1');
+  e.ctx.getJelajahSekitar(ta);
+  const sheet = e.ctx.getJelajahRecommendationSheet_();
+  const headers = sheet.data[0];
+  function oldRow(id, url) { const row = headers.map(function () { return ''; }); row[0] = id; row[1] = new Date(); row[2] = 'budi'; row[4] = 'Restoran'; row[5] = 'Bakso'; row[6] = 'Lama ' + id; row[7] = url; row[14] = 'Aktif'; sheet.appendRow(row); }
+  oldRow('a', 'https://maps.app.goo.gl/abc123');
+  oldRow('b', 'https://www.google.com/maps?q=-6.1400,106.8300');
+  oldRow('c', 'https://maps.app.goo.gl/rusak');
+  assert.strictEqual(e.ctx.getKelolaJelajah(ta).missingCoords, 3);
+  const r = e.ctx.fillJelajahCoordinates(ta);
+  deq(r.report, { filled: 2, failed: 1, remaining: 0 });
+  const list = e.ctx.getJelajahSekitar(ta).recommendations;
+  const byId = {}; list.forEach(function (x) { byId[x.id] = x; });
+  assert.strictEqual(byId.a.lat, -6.1251, 'pakai !3d!4d yang lebih tepat'); assert.strictEqual(byId.b.lng, 106.83); assert.strictEqual(byId.c.lat, null);
+  const again = e.ctx.fillJelajahCoordinates(ta).report;
+  deq(again, { filled: 0, failed: 0, remaining: 0 }, 'yang gagal tidak dicoba terus');
 });
 
 console.log('\n' + passed + ' uji backend v12 lulus');

@@ -8,6 +8,8 @@ const vm = require('vm');
 
 function toSigned(buf) { return Array.from(buf).map(function (b) { return b > 127 ? b - 256 : b; }); }
 
+// Seperti Google Sheets: teks berawalan tanda petik disimpan tanpa tanda petiknya.
+function cell(v) { return typeof v === 'string' && v.charAt(0) === "'" ? v.slice(1) : v; }
 function makeSheet(name, rows) {
   const data = rows ? rows.map(function (r) { return r.slice(); }) : [];
   const sheet = {
@@ -15,7 +17,10 @@ function makeSheet(name, rows) {
     getName: function () { return name; },
     getLastRow: function () { return data.length; },
     getLastColumn: function () { return data.reduce(function (m, r) { return Math.max(m, r.length); }, 0); },
-    appendRow: function (row) { data.push(row.slice()); return sheet; },
+    maxRows: 1000, maxCols: 26,
+    getMaxRows: function () { return Math.max(sheet.maxRows, data.length); },
+    getMaxColumns: function () { return Math.max(sheet.maxCols, sheet.getLastColumn()); },
+    appendRow: function (row) { data.push(row.map(cell)); return sheet; },
     deleteRow: function (n) { data.splice(n - 1, 1); },
     setFrozenRows: function () {},
     hideSheet: function () { sheet.hidden = true; },
@@ -37,10 +42,12 @@ function makeSheet(name, rows) {
         setValues: function (values) {
           for (let r = 0; r < values.length; r++) {
             if (!data[row - 1 + r]) data[row - 1 + r] = [];
-            for (let c = 0; c < values[r].length; c++) data[row - 1 + r][col - 1 + c] = values[r][c];
+            for (let c = 0; c < values[r].length; c++) data[row - 1 + r][col - 1 + c] = cell(values[r][c]);
           }
         },
-        setValue: function (v) { if (!data[row - 1]) data[row - 1] = []; data[row - 1][col - 1] = v; },
+        getValue: function () { const v = (data[row - 1] || [])[col - 1]; return v === undefined ? '' : v; },
+        setValue: function (v) { if (!data[row - 1]) data[row - 1] = []; data[row - 1][col - 1] = cell(v); },
+        clearContent: function () { for (let r = 0; r < numRows; r++) for (let c = 0; c < numCols; c++) if (data[row - 1 + r]) data[row - 1 + r][col - 1 + c] = ''; return this; },
         setNumberFormat: function () { return this; },
         createTextFinder: function (text) {
           return {
@@ -82,7 +89,7 @@ function createContext(options) {
     http.calls.push({ url: url, params: params });
     http.lockAtCall.push(lockHeld);
     const res = (options.http || function () { return { code: 200, body: '{}' }; })(url, params);
-    return { getResponseCode: function () { return res.code; }, getContentText: function () { return res.body; } };
+    return { getResponseCode: function () { return res.code; }, getContentText: function () { return res.body; }, getAllHeaders: function () { return res.headers || {}; } };
   } };
   const ctx = {
     console: console, JSON: JSON, Math: Math, Date: FakeDate, Number: Number, String: String, Array: Array, Object: Object,
@@ -94,6 +101,7 @@ function createContext(options) {
     }; } },
     PropertiesService: { getScriptProperties: function () { return {
       getProperty: function (k) { return props[k] === undefined ? null : props[k]; },
+      setProperties: function (o) { Object.keys(o).forEach(function (k) { props[k] = String(o[k]); }); },
       setProperty: function (k, v) { props[k] = String(v); }
     }; } },
     LockService: { getScriptLock: function () { return {
@@ -102,7 +110,7 @@ function createContext(options) {
     }; } },
     Utilities: {
       getUuid: function () { return crypto.randomUUID(); },
-      DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },
+      DigestAlgorithm: { SHA_256: 'sha256', MD5: 'md5' }, Charset: { UTF_8: 'utf8' },
       computeDigest: function (alg, text) { return toSigned(crypto.createHash('sha256').update(String(text), 'utf8').digest()); },
       computeHmacSha256Signature: function (text, key) { return toSigned(crypto.createHmac('sha256', String(key)).update(String(text), 'utf8').digest()); },
       formatDate: function (d, tz, pattern) {
@@ -123,6 +131,11 @@ function createContext(options) {
       fetch: function (url, params) { return http.fetch(url, params); },
       fetchAll: function (requests) { http.batches.push(requests.length); return requests.map(function (r) { return http.fetch(r.url, r); }); }
     },
+    // Tiruan layanan Maps: options.maps = { geocode(query) -> {results}, reverse(lat,lng) -> {results} }
+    Maps: { newGeocoder: function () { const g = { calls: [],
+      setRegion: function () { return g; }, setLanguage: function () { return g; }, setBounds: function () { return g; },
+      geocode: function (q) { (ctx.__geoCalls = ctx.__geoCalls || []).push(q); return (options.maps && options.maps.geocode || function () { return { status: 'ZERO_RESULTS', results: [] }; })(q); },
+      reverseGeocode: function (la, ln) { (ctx.__geoCalls = ctx.__geoCalls || []).push(la + ',' + ln); return (options.maps && options.maps.reverse || function () { return { results: [] }; })(la, ln); } }; return g; } },
     ScriptApp: {
       getService: function () { return { getUrl: function () { return 'https://script.google.com/macros/s/TEST/exec'; } }; },
       getProjectTriggers: function () { return triggers.slice(); },
@@ -137,9 +150,11 @@ function createContext(options) {
     },
     SpreadsheetApp: { getActiveSpreadsheet: function () { return {
       getSheetByName: function (n) { return sheets[n] || null; },
+      getSheets: function () { return Object.keys(sheets).map(function (n) { return sheets[n]; }); },
       insertSheet: function (n) { sheets[n] = makeSheet(n, []); return sheets[n]; },
       getSpreadsheetTimeZone: function () { return 'Asia/Jakarta'; }
     }; } },
+    Session: { getScriptTimeZone: function () { return 'Asia/Jakarta'; } },
     ContentService: {
       MimeType: { JSON: 'json' },
       createTextOutput: function (t) { return { text: t, setMimeType: function () { return this; }, getContent: function () { return t; } }; }

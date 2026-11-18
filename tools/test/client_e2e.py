@@ -110,8 +110,8 @@ with sync_playwright() as p:
     page.click('#bottomNavUser [data-page="menuUser"]')
     page.wait_for_timeout(500)
     page.screenshot(path=os.path.join(OUT, '04-menu.png'))
-    check('kartu Menu menampilkan keterangan di layar sentuh',
-          page.evaluate("(() => { const el = document.querySelector('.user-menu-card-detail'); return !!el && getComputedStyle(el).display !== 'none'; })()"))
+    check('kartu Menu ringkas (keterangan dipindah ke FAQ) dan ada kartu Bantuan & FAQ',
+          page.evaluate("(() => !document.querySelector('.user-menu-card-detail') && !!document.querySelector('.user-menu-card[onclick*=faq]'))()"))
 
     page.go_back()
     page.wait_for_timeout(400)

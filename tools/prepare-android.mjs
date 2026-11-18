@@ -78,3 +78,17 @@ writeFileSync(join(drawableDir, 'ic_stat_tt2.xml'), `<?xml version="1.0" encodin
 </vector>
 `);
 console.log('Ikon notifikasi ic_stat_tt2 ditulis.');
+
+// v16: izin lokasi untuk tombol "Pakai lokasi saya" di Jelajah Sekitar.
+// Capacitor meneruskan permintaan lokasi WebView ke dialog izin Android bila izin ini ada di manifest.
+const manifestPath = join(root, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
+if (existsSync(manifestPath)) {
+  let manifest = readFileSync(manifestPath, 'utf8');
+  const perms = ['android.permission.ACCESS_COARSE_LOCATION', 'android.permission.ACCESS_FINE_LOCATION'];
+  const missing = perms.filter((p) => !manifest.includes(`android:name="${p}"`));
+  if (missing.length) {
+    manifest = manifest.replace(/<application\b/, missing.map((p) => `<uses-permission android:name="${p}" />`).join('\n    ') + '\n    <application');
+    writeFileSync(manifestPath, manifest);
+    console.log('Izin lokasi ditambahkan ke AndroidManifest.xml');
+  }
+}

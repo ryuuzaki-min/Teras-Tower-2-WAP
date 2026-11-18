@@ -1,5 +1,5 @@
 // ===================================================================
-// TERAS TOWER 2 - Backend Apps Script (v13 - LAPORAN RILIS OTOMATIS)
+// TERAS TOWER 2 - Backend Apps Script (v16 - JELAJAH SEKITAR BARU, FAQ, AUDIT TAMPILAN)
 // ===================================================================
 
 // SUPER ADMIN CREDENTIALS
@@ -503,6 +503,7 @@ function getManagementLog(sessionToken, category) {
     nomorDarurat: ['UPDATE_NOMOR_DARURAT'],
     admin: ['ADD_ADMIN', 'REMOVE_ADMIN'],
     aplikasi: ['UPDATE_THEME', 'UPDATE_BANNERS', 'UPDATE_APP_FEEDBACK'],
+    faq: ['ADD_FAQ', 'UPDATE_FAQ', 'DELETE_FAQ', 'MOVE_FAQ'],
     logSystem: ['LOGIN_FAILED', 'MARK_ERROR_LOG_SEEN']
   };
   const allowed = categories[category] || Object.keys(categories).reduce(function (all, key) { return all.concat(categories[key]); }, []);
@@ -571,6 +572,63 @@ function markErrorLogSeen(sessionToken) {
   setNotificationLastSeen_(session.username, 'errorLog');
   return { success: true };
 }
+// v15: Google Sheets membatasi 10 juta sel per berkas (termasuk baris/kolom kosong
+// yang sudah dibuat). Hitungan memakai ukuran grid tiap sheet.
+const SPREADSHEET_CELL_LIMIT = 10000000;
+function getSpreadsheetCapacity_() {
+  const sheets = SpreadsheetApp.getActiveSpreadsheet().getSheets();
+  let used = 0, largest = '', largestCells = 0;
+  const list = sheets.map(function (sheet) {
+    const maxRows = sheet.getMaxRows(), maxCols = sheet.getMaxColumns();
+    const cells = maxRows * maxCols;
+    used += cells;
+    if (cells > largestCells) { largestCells = cells; largest = sheet.getName(); }
+    return { name: sheet.getName(), dataRows: Math.max(sheet.getLastRow() - 1, 0), maxRows: maxRows, columns: maxCols, cells: cells, emptyRows: Math.max(maxRows - sheet.getLastRow(), 0) };
+  });
+  const free = Math.max(SPREADSHEET_CELL_LIMIT - used, 0);
+  // Perkiraan baris baru yang masih muat: baris kosong yang sudah ada + sisa sel dibagi jumlah kolom sheet.
+  list.forEach(function (item) { item.rowsAvailable = item.emptyRows + Math.floor(free / Math.max(item.columns, 1)); });
+  list.sort(function (a, b) { return b.cells - a.cells; });
+  const percent = Math.round(used / SPREADSHEET_CELL_LIMIT * 1000) / 10;
+  return { usedCells: used, limitCells: SPREADSHEET_CELL_LIMIT, freeCells: free, percent: percent, largest: largest, largestCells: largestCells, sheets: list,
+    level: percent >= 90 ? 'kritis' : (percent >= 75 ? 'waspada' : 'ok') };
+}
+// Halaman Kelola Aplikasi > Penyimpanan Data (Super Admin).
+function getStorageInfo(sessionToken) {
+  requireSession_(sessionToken, ['super_admin']);
+  const cap = getSpreadsheetCapacity_();
+  try { CacheService.getScriptCache().put('sheet-capacity-v1', JSON.stringify(cap), 21600); } catch (ignore) {}
+  cap.checkedAt = formatTanggal_(new Date());
+  return cap;
+}
+function getSpreadsheetCapacityCached_() {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get('sheet-capacity-v1');
+  if (cached) { try { return JSON.parse(cached); } catch (ignore) {} }
+  const value = getSpreadsheetCapacity_();
+  try { cache.put('sheet-capacity-v1', JSON.stringify(value), 21600); } catch (ignore) {}
+  return value;
+}
+// Dipanggil pemicu harian: kirim push ke admin saat kapasitas melewati 75% / 90%,
+// sekali per tingkat (tidak berulang setiap hari).
+function checkSpreadsheetCapacity_() {
+  const cap = getSpreadsheetCapacity_();
+  try { CacheService.getScriptCache().put('sheet-capacity-v1', JSON.stringify(cap), 21600); } catch (ignore) {}
+  const props = PropertiesService.getScriptProperties();
+  const lastLevel = props.getProperty('CAPACITY_ALERT_LEVEL') || 'ok';
+  if (cap.level !== lastLevel) {
+    props.setProperty('CAPACITY_ALERT_LEVEL', cap.level);
+    if (cap.level !== 'ok' && (lastLevel === 'ok' || cap.level === 'kritis')) {
+      queuePush_({ admins: true }, {
+        title: cap.level === 'kritis' ? 'Penyimpanan data hampir penuh' : 'Penyimpanan data mulai penuh',
+        body: 'Spreadsheet Teras Tower 2 sudah terpakai ' + cap.percent + '%. Buka Notifikasi untuk rinciannya.',
+        page: 'notifikasi'
+      });
+    }
+  }
+  return cap;
+}
+
 function getDatabaseHealth(sessionToken) {
   requireSession_(sessionToken, ['super_admin']);
   const expected = [
@@ -591,7 +649,9 @@ function getDatabaseHealth(sessionToken) {
     (item.anyRequired || []).forEach(function (options) { if (!options.some(function (header) { return headers.indexOf(header) >= 0; })) missing.push(options.join(' atau ')); });
     return { name: item.name, status: missing.length ? 'warning' : 'ok', missing: missing, rows: Math.max(sheet.getLastRow() - 1, 0) };
   });
-  return { checkedAt: formatTanggal_(new Date()), ok: checks.filter(function (x) { return x.status === 'ok'; }).length, warnings: checks.filter(function (x) { return x.status !== 'ok'; }).length, checks: checks };
+  let capacity = null;
+  try { capacity = getSpreadsheetCapacity_(); } catch (ignore) {}
+  return { checkedAt: formatTanggal_(new Date()), ok: checks.filter(function (x) { return x.status === 'ok'; }).length, warnings: checks.filter(function (x) { return x.status !== 'ok'; }).length, checks: checks, capacity: capacity };
 }
 
 // ===================================================================
@@ -655,7 +715,12 @@ const TT2_API_NAMES = [
   // v12
   'registerPushToken', 'unregisterPushToken', 'sendPengumuman', 'getPengumumanTerbaru', 'getPengumumanAdmin',
   // v13: dipanggil workflow GitHub (dijaga RELEASE_SECRET, bukan sesi)
-  'reportApkRelease'
+  'reportApkRelease',
+  // v15
+  'getStorageInfo', 'getFaq', 'saveFaqItem', 'deleteFaqItem', 'moveFaqItem',
+  // v16 Jelajah
+  'searchJelajahPlaces', 'reverseJelajahLocation', 'updateJelajahRecommendation', 'toggleJelajahFavorite',
+  'submitJelajahReport', 'resolveJelajahReport', 'setJelajahTowerLocation', 'fillJelajahCoordinates'
 ];
 
 // Peta nama -> fungsi dibuat saat dipanggil, sehingga urutan deklarasi tidak berpengaruh.
@@ -693,9 +758,14 @@ function doPost(e) {
 // Isinya sama dengan yang sudah terlihat oleh siapa pun yang membuka halaman login.
 function getBootstrap() {
   const appInfo = getAppInfoData_();
+  const systemConfig = getSystemConfig_();
+  // v14: versi APK terbaru selalu dikirim sebagai teks yang valid (lihat normalizeVersion_).
+  const apk = getLatestApkInfo_();
+  systemConfig.ApkVersiTerbaru = apk.version;
+  systemConfig.ApkTautanUnduh = apk.url;
   return {
     appInfo: { Deskripsi: appInfo.Deskripsi || '', Penutup: appInfo.Penutup || '' },
-    systemConfig: getSystemConfig_(),
+    systemConfig: systemConfig,
     appUrl: ScriptApp.getService().getUrl(),
     appVersion: getAppVersion_(),
     serverTime: Date.now()
@@ -1143,7 +1213,7 @@ function getJelajahRecommendationSheet_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(SHEET_JELAJAH);
   if (!sheet) sheet = ss.insertSheet(SHEET_JELAJAH);
-  ensureJelajahHeaders_(sheet, ['ID', 'Timestamp', 'Username', 'NamaPengirim', 'Kategori', 'Jenis', 'NamaLokasi', 'TautanMaps', 'Alamat', 'Keterangan', 'Tagging', 'StatusVerifikasi', 'VerifikasiOleh', 'TanggalVerifikasi', 'StatusRekomendasi']);
+  ensureJelajahHeaders_(sheet, JELAJAH_REC_HEADERS);
   return sheet;
 }
 function getJelajahReviewSheet_() {
@@ -1248,47 +1318,50 @@ function buildJelajahRecommendationPublic_(row, summary) {
     namaLokasi: String(row.NamaLokasi || ''), tautanMaps: String(row.TautanMaps || ''), alamat: String(row.Alamat || ''),
     keterangan: String(row.Keterangan || ''), tags: String(row.Tagging || ''),
     verified: String(row.StatusVerifikasi || '') === 'Terverifikasi',
+    lat: (function () { const c = parseJelajahCoordinate_(row.Lat, row.Lng); return c ? c.lat : null; })(),
+    lng: (function () { const c = parseJelajahCoordinate_(row.Lat, row.Lng); return c ? c.lng : null; })(),
+    jamBuka: String(row.JamBuka || ''), harga: Number(row.Harga) >= 1 && Number(row.Harga) <= 5 ? Number(row.Harga) : 0,
+    createdMs: row.Timestamp ? new Date(row.Timestamp).getTime() || 0 : 0,
     ratingAverage: score.average || 0, ratingCount: score.total || 0,
     featuredComment: score.latestComment ? score.latestComment.text : '',
     featuredCommentName: score.latestComment ? score.latestComment.name : '', featuredCommentRating: score.latestComment ? score.latestComment.rating : 0
   };
 }
 function getJelajahSekitar(sessionToken) {
-  requireSession_(sessionToken, ['resident', 'admin', 'super_admin']);
+  const session = requireSession_(sessionToken, ['resident', 'admin', 'super_admin']);
   withScriptLock_(function () { getJelajahCategorySheet_(); getJelajahTypeSheet_(); getJelajahRecommendationSheet_(); getJelajahReviewSheet_(); });
   const catalog = getJelajahCatalog_();
   const reviews = getSheetData_(SHEET_JELAJAH_ULASAN);
   const summary = getJelajahReviewSummary_(reviews);
+  const me = String(session.username || '').toLowerCase();
+  getJelajahFavoriteSheet_();
+  const favorites = getSheetData_(SHEET_JELAJAH_FAVORIT).filter(function (row) { return String(row.Username || '').toLowerCase() === me; }).map(function (row) { return String(row.RecommendationID); });
   const recommendations = getJelajahRecommendationRows_().filter(function (row) { return String(row.StatusRekomendasi || 'Aktif') !== 'Dihapus'; })
-    .map(function (row) { return buildJelajahRecommendationPublic_(row, summary); }).reverse();
-  return { success: true, categories: catalog.categories, allCategories: catalog.allCategories, categoryActiveByName: catalog.categoryActiveByName, typesByCategory: catalog.typesByCategory, allTypesByCategory: catalog.allTypesByCategory, typeActiveByCategory: catalog.typeActiveByCategory, categoryIcons: catalog.categoryIcons, typeIconsByCategory: catalog.typeIconsByCategory, iconOptions: catalog.iconOptions, recommendations: recommendations };
+    .map(function (row) {
+      const item = buildJelajahRecommendationPublic_(row, summary);
+      item.mine = String(row.Username || '').toLowerCase() === me;
+      item.favorited = favorites.indexOf(item.id) >= 0;
+      return item;
+    }).reverse();
+  return { success: true, tower: getJelajahTowerLocation_(), priceLabels: JELAJAH_PRICE_LABELS, reportReasons: JELAJAH_REPORT_REASONS, canManage: session.role !== 'resident', categories: catalog.categories, allCategories: catalog.allCategories, categoryActiveByName: catalog.categoryActiveByName, typesByCategory: catalog.typesByCategory, allTypesByCategory: catalog.allTypesByCategory, typeActiveByCategory: catalog.typeActiveByCategory, categoryIcons: catalog.categoryIcons, typeIconsByCategory: catalog.typeIconsByCategory, iconOptions: catalog.iconOptions, recommendations: recommendations };
 }
 function submitJelajahRecommendation(payload) {
   const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
   payload = payload || {};
-  const category = String(payload.kategori || '').trim();
-  const type = String(payload.jenis || '').trim();
-  const placeName = String(payload.namaLokasi || '').trim();
-  const mapsUrl = String(payload.tautanMaps || '').trim();
-  const address = String(payload.alamat || '').trim();
-  const details = String(payload.keterangan || '').trim();
-  const tags = Array.isArray(payload.tags) ? payload.tags : String(payload.tags || '').split(',');
-  const cleanTags = tags.map(function (tag) { return String(tag || '').trim().replace(/^#/, ''); }).filter(Boolean);
-    if (!category || category.length > 60) return { success: false, message: 'Kategori wajib dipilih.' };
-    if (!type || type.length > 80) return { success: false, message: 'Jenis rekomendasi wajib dipilih.' };
-    if (!placeName || placeName.length > 140) return { success: false, message: 'Nama lokasi wajib diisi (maksimal 140 karakter).' };
-    if (!isAllowedGoogleMapsUrl_(mapsUrl)) return { success: false, message: 'Tautan harus berupa link Google Maps atau Maps Short Link yang valid.' };
-    if (address.length > 240 || details.length > 1200 || cleanTags.length > 8 || cleanTags.some(function (tag) { return tag.length > 32; })) return { success: false, message: 'Alamat/keterangan/tag terlalu panjang atau jumlah tag melebihi batas.' };
+  let input;
+  try { input = readJelajahRecommendationInput_(payload); } catch (err) { return { success: false, message: err.message }; }
   try {
-    const warga = getSheetData_(SHEET_WARGA).find(function (row) { return String(row.Username || '').toLowerCase() === String(session.username || '').toLowerCase(); });
-    const senderName = String(warga && warga.Nama || session.username);
+    const senderName = jelajahSenderName_(session.username);
     return withScriptLock_(function () {
       const catalog = getJelajahCatalog_();
-      if (catalog.categories.indexOf(category) < 0 || (catalog.typesByCategory[category] || []).indexOf(type) < 0) return { success: false, message: 'Kategori atau jenis sudah tidak tersedia. Muat ulang halaman dan pilih kembali.' };
+      if (catalog.categories.indexOf(input.kategori) < 0 || (catalog.typesByCategory[input.kategori] || []).indexOf(input.jenis) < 0) return { success: false, message: 'Kategori atau jenis sudah tidak tersedia. Muat ulang halaman dan pilih kembali.' };
       const id = Utilities.getUuid();
-      getJelajahRecommendationSheet_().appendRow([id, new Date(), sheetText_(session.username), sheetText_(senderName), sheetText_(category), sheetText_(type), sheetText_(placeName), sheetText_(mapsUrl), sheetText_(address), sheetText_(details), sheetText_(cleanTags.join(', ')), 'Menunggu', '', '']);
-      writeAuditLog_('SUBMIT_JELAJAH_RECOMMENDATION', session.username, id, 'category=' + category);
-      return { success: true, message: 'Rekomendasi berhasil disimpan dan langsung tersedia untuk warga.' };
+      const record = jelajahRecordFromInput_(input);
+      record.ID = id; record.Timestamp = new Date(); record.Username = sheetText_(session.username); record.NamaPengirim = sheetText_(senderName);
+      record.StatusVerifikasi = 'Menunggu'; record.StatusRekomendasi = 'Aktif';
+      appendRowByHeaders_(getJelajahRecommendationSheet_(), record);
+      writeAuditLog_('SUBMIT_JELAJAH_RECOMMENDATION', session.username, id, 'category=' + input.kategori);
+      return { success: true, id: id, message: 'Rekomendasi berhasil disimpan dan langsung tersedia untuk warga.' };
     });
   } catch (err) {
     writeApplicationError_('submitJelajahRecommendation', err, session.username);
@@ -1366,7 +1439,14 @@ function getKelolaJelajah(sessionToken) {
     item.statusRekomendasi = String(row.StatusRekomendasi || 'Aktif');
     return item;
   }).reverse();
-  return { success: true, actor: session.username, categories: catalog.allCategories, typesByCategory: catalog.allTypesByCategory, categoryActiveByName: catalog.categoryActiveByName, typeActiveByCategory: catalog.typeActiveByCategory, categoryIcons: catalog.categoryIcons, typeIconsByCategory: catalog.typeIconsByCategory, iconOptions: catalog.iconOptions, recommendations: recommendations };
+  getJelajahReportSheet_();
+  const recNames = {};
+  recommendations.forEach(function (r) { recNames[r.id] = r.namaLokasi; });
+  const reports = getSheetData_(SHEET_JELAJAH_LAPORAN).filter(function (row) { return String(row.Status || 'Baru') === 'Baru'; }).map(function (row) {
+    return { id: String(row.ID), recommendationId: String(row.RecommendationID), namaLokasi: recNames[String(row.RecommendationID)] || '(sudah dihapus)', alasan: String(row.Alasan || ''), catatan: String(row.Catatan || ''), pelapor: String(row.NamaPelapor || row.Username || ''), tanggal: row.CreatedAt ? formatTanggal_(row.CreatedAt) : '' };
+  }).reverse();
+  const missingCoords = recommendations.filter(function (r) { return r.statusRekomendasi !== 'Dihapus' && (r.lat === null || r.lng === null); }).length;
+  return { success: true, actor: session.username, reports: reports, tower: getJelajahTowerLocation_(), missingCoords: missingCoords, categories: catalog.allCategories, typesByCategory: catalog.allTypesByCategory, categoryActiveByName: catalog.categoryActiveByName, typeActiveByCategory: catalog.typeActiveByCategory, categoryIcons: catalog.categoryIcons, typeIconsByCategory: catalog.typeIconsByCategory, iconOptions: catalog.iconOptions, recommendations: recommendations };
 }
 function addJelajahCategory(payload) {
   const session = requireJelajahAdmin_(payload && payload.sessionToken);
@@ -2023,6 +2103,7 @@ function getNotificationSummary(sessionToken) {
       }).length;
     }
   }
+    try { const cap = getSpreadsheetCapacityCached_(); result.kapasitas = { level: cap.level, percent: cap.percent, usedCells: cap.usedCells, limitCells: cap.limitCells, largest: cap.largest }; } catch (ignore) {}
     result.generatedAt = now;
     CacheService.getScriptCache().put(notificationSummaryCacheKey_(username), JSON.stringify(result), 30);
     return result;
@@ -2577,6 +2658,16 @@ function updateTindakLanjut(payload) {
 // NOMOR PENTING & DARURAT
 // ===================================================================
 function getNomorPenting() { return getSheetData_(SHEET_NOMORPENTING); }
+// v15: pastikan sheet punya kolom berjudul `header`; kembalikan nomor kolomnya (1-based).
+function ensureSheetColumn_(sheet, header) {
+  const lastCol = Math.max(sheet.getLastColumn(), 1);
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(String);
+  const found = headers.indexOf(header);
+  if (found >= 0) return found + 1;
+  const col = headers.join('') === '' ? 1 : lastCol + 1;
+  sheet.getRange(1, col).setValue(header);
+  return col;
+}
 function getNomorDarurat() { return getSheetData_(SHEET_NOMORDARURAT); }
 
 function saveNomorPenting(payload) {
@@ -2585,14 +2676,20 @@ function saveNomorPenting(payload) {
   try {
     const input = Array.isArray(payload && payload.data) ? payload.data : [];
     if (input.length > 100) throw new Error('Maksimal 100 nomor penting.');
+    const kategoriAllowed = ['Pengelola', 'Keamanan', 'Lainnya'];
     const rows = input.map(function (item) {
       return [sheetText_(validateString_(item && item.nama, 'Nama kontak', 1, 120)), sheetText_(validateString_(item && item.nomor, 'Nomor kontak', 1, 250))];
     });
+    const kategori = input.map(function (item) {
+      const value = String(item && item.kategori || 'Lainnya');
+      return [kategoriAllowed.indexOf(value) >= 0 ? value : 'Lainnya'];
+    });
     return withScriptLock_(function () {
       const sheet = getSheet_(SHEET_NOMORPENTING);
+      const kategoriCol = ensureSheetColumn_(sheet, 'Kategori');
       const lastRow = sheet.getLastRow();
-      if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, 2).clearContent();
-      if (rows.length) sheet.getRange(2, 1, rows.length, 2).setValues(rows);
+      if (lastRow > 1) { sheet.getRange(2, 1, lastRow - 1, 2).clearContent(); sheet.getRange(2, kategoriCol, lastRow - 1, 1).clearContent(); }
+      if (rows.length) { sheet.getRange(2, 1, rows.length, 2).setValues(rows); sheet.getRange(2, kategoriCol, rows.length, 1).setValues(kategori); }
       writeAuditLog_('UPDATE_NOMOR_PENTING', session.username, SHEET_NOMORPENTING, 'rows=' + rows.length);
       return { success: true };
     });
@@ -3069,6 +3166,101 @@ function getAppClock(sessionToken) {
   };
 }
 
+// ===================================================================
+// v15 — HARI LIBUR & HARI PERINGATAN OTOMATIS
+// -------------------------------------------------------------------
+// Sumber utama: kalender publik "Hari Libur di Indonesia" milik Google (format ICS,
+// tanpa login). Hasil per tahun disimpan di cache 12 jam.
+// Koreksi manual (mis. cuti bersama baru / hari peringatan tambahan): buat sheet
+// "HariLibur" dengan kolom Tanggal | Nama | Jenis (Libur / Peringatan / Internasional / Hapus).
+// Hari internasional bertanggal tetap ada di daftar INTERNATIONAL_DAYS di bawah.
+// Baris "Hapus" menyembunyikan entri Google pada tanggal itu.
+// ===================================================================
+const SHEET_HARILIBUR = 'HariLibur';
+const HOLIDAY_ICS_URL = 'https://calendar.google.com/calendar/ical/id.indonesian%23holiday%40group.v.calendar.google.com/public/basic.ics';
+
+function parseHolidayIcs_(text) {
+  const lines = String(text || '').replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '').split(/\r?\n/);
+  const out = [];
+  let current = null;
+  lines.forEach(function (line) {
+    if (line === 'BEGIN:VEVENT') { current = {}; return; }
+    if (line === 'END:VEVENT') { if (current && current.date && current.name) out.push(current); current = null; return; }
+    if (!current) return;
+    const idx = line.indexOf(':'); if (idx < 0) return;
+    const key = line.substring(0, idx).split(';')[0];
+    const value = line.substring(idx + 1).replace(/\\,/g, ',').replace(/\\n/g, '\n').replace(/\\;/g, ';').trim();
+    if (key === 'DTSTART') { const m = value.match(/^(\d{4})(\d{2})(\d{2})/); if (m) current.date = m[1] + '-' + m[2] + '-' + m[3]; }
+    else if (key === 'SUMMARY') current.name = value;
+    else if (key === 'DESCRIPTION') current.description = value;
+  });
+  return out.map(function (item) {
+    const desc = String(item.description || '').toLowerCase();
+    const observance = /observance|peringatan|perayaan/.test(desc) && !/libur|public holiday/.test(desc.split('\n')[0]);
+    return { date: item.date, name: item.name, type: observance ? 'peringatan' : 'libur' };
+  });
+}
+
+function getGoogleHolidays_(year) {
+  const cache = CacheService.getScriptCache();
+  const key = 'holidays-v1-' + year;
+  const cached = cache.get(key);
+  if (cached) { try { return JSON.parse(cached); } catch (ignore) {} }
+  let list = [];
+  try {
+    const response = UrlFetchApp.fetch(HOLIDAY_ICS_URL, { muteHttpExceptions: true, followRedirects: true });
+    if (response.getResponseCode() === 200) {
+      list = parseHolidayIcs_(response.getContentText()).filter(function (item) { return item.date.indexOf(String(year)) === 0; });
+    }
+  } catch (err) { console.warn('Kalender libur Google tidak terambil: ' + err.message); }
+  try { cache.put(key, JSON.stringify(list), list.length ? 43200 : 1800); } catch (ignore) {}
+  return list;
+}
+
+function getManualHolidays_() {
+  const sheet = getSheet_(SHEET_HARILIBUR);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  return getSheetData_(SHEET_HARILIBUR).map(function (row) {
+    const jenis = String(row.Jenis || 'Libur').trim().toLowerCase();
+    return { date: agendaDateKey_(row.Tanggal), name: String(row.Nama || '').trim(), type: jenis === 'hapus' ? 'hapus' : (jenis === 'peringatan' ? 'peringatan' : (jenis === 'internasional' ? 'internasional' : 'libur')) };
+  }).filter(function (item) { return /^\d{4}-\d{2}-\d{2}$/.test(item.date); });
+}
+
+// Hari internasional yang tanggalnya tetap dan benar-benar diperingati luas (sebagian besar hari PBB/WHO).
+const INTERNATIONAL_DAYS = [
+  ['01-27', 'Hari Peringatan Holocaust Internasional'], ['02-04', 'Hari Kanker Sedunia'], ['02-21', 'Hari Bahasa Ibu Internasional'],
+  ['03-08', 'Hari Perempuan Internasional'], ['03-15', 'Hari Hak Konsumen Sedunia'], ['03-21', 'Hari Hutan Internasional'], ['03-22', 'Hari Air Sedunia'],
+  ['04-07', 'Hari Kesehatan Sedunia'], ['04-22', 'Hari Bumi'], ['04-23', 'Hari Buku Sedunia'],
+  ['05-01', 'Hari Buruh Internasional'], ['05-31', 'Hari Tanpa Tembakau Sedunia'],
+  ['06-05', 'Hari Lingkungan Hidup Sedunia'], ['06-14', 'Hari Donor Darah Sedunia'], ['06-26', 'Hari Anti Narkotika Internasional'],
+  ['08-12', 'Hari Remaja Internasional'], ['09-08', 'Hari Aksara Internasional'], ['09-21', 'Hari Perdamaian Internasional'], ['09-29', 'Hari Jantung Sedunia'],
+  ['10-01', 'Hari Lanjut Usia Internasional'], ['10-05', 'Hari Guru Sedunia'], ['10-10', 'Hari Kesehatan Jiwa Sedunia'], ['10-16', 'Hari Pangan Sedunia'], ['10-24', 'Hari Perserikatan Bangsa-Bangsa'],
+  ['11-14', 'Hari Diabetes Sedunia'], ['11-19', 'Hari Toilet Sedunia'], ['11-20', 'Hari Anak Sedunia'],
+  ['12-01', 'Hari AIDS Sedunia'], ['12-03', 'Hari Penyandang Disabilitas Internasional'], ['12-05', 'Hari Relawan Internasional'], ['12-10', 'Hari Hak Asasi Manusia']
+];
+
+function getHolidaysForMonth_(year, month) {
+  const monthKey = String(year) + '-' + ('0' + month).slice(-2);
+  const manual = getManualHolidays_().filter(function (item) { return item.date.indexOf(monthKey) === 0; });
+  const removed = {};
+  manual.forEach(function (item) { if (item.type === 'hapus') removed[item.date] = true; });
+  const merged = getGoogleHolidays_(year).filter(function (item) { return item.date.indexOf(monthKey) === 0 && !removed[item.date]; });
+  manual.forEach(function (item) {
+    if (item.type === 'hapus' || !item.name) return;
+    if (!merged.some(function (x) { return x.date === item.date && x.name === item.name; })) merged.push(item);
+  });
+  INTERNATIONAL_DAYS.forEach(function (day) {
+    const date = String(year) + '-' + day[0];
+    if (date.indexOf(monthKey) !== 0 || removed[date]) return;
+    // Tanggal yang sudah libur nasional, atau sudah ada dengan nama serupa (mis. 1 Mei), tidak diulang.
+    const key = day[1].toLowerCase().split(' ').slice(0, 2).join(' ');
+    if (merged.some(function (x) { return x.date === date && (x.type === 'libur' || x.name.toLowerCase().indexOf(key) >= 0); })) return;
+    merged.push({ date: date, name: day[1], type: 'internasional' });
+  });
+  const order = { libur: 0, peringatan: 1, internasional: 2 };
+  return merged.sort(function (a, b) { return a.date.localeCompare(b.date) || order[a.type] - order[b.type]; });
+}
+
 function getAgendaSheet_() {
   const headers = ['ID', 'Tanggal', 'JamMulai', 'JamSelesai', 'Judul', 'Lokasi', 'Detail', 'StatusAgenda', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'];
   return withScriptLock_(function () {
@@ -3184,8 +3376,10 @@ function getAgendaCalendar(sessionToken, yearValue, monthValue) {
     });
     try { cache.put(cacheKey, JSON.stringify(events), 60); } catch (ignore) {}
   }
+  let holidays = [];
+  try { holidays = getHolidaysForMonth_(year, month); } catch (err) { writeApplicationError_('getHolidaysForMonth_', err, session.username); }
   return {
-    success: true, year: year, month: month, monthKey: monthKey, events: events,
+    success: true, year: year, month: month, monthKey: monthKey, events: events, holidays: holidays,
     isAdmin: isAdmin, serverTimeMs: now.getTime(), serverToday: Utilities.formatDate(now, 'Asia/Jakarta', 'yyyy-MM-dd'), timeZone: 'Asia/Jakarta'
   };
 }
@@ -3549,6 +3743,8 @@ function jalankanPembersihanAkunHarian() {
   try {
     const report = runAccountCleanup_();
     console.log('Pembersihan akun: ' + JSON.stringify(report));
+    try { report.kapasitas = checkSpreadsheetCapacity_(); } catch (err) { writeApplicationError_('checkSpreadsheetCapacity_', err, 'sistem'); }
+    try { report.jelajahTitik = withScriptLock_(function () { return fillJelajahCoordinates_(25); }); } catch (err) { writeApplicationError_('fillJelajahCoordinates_', err, 'sistem'); }
     return report;
   } catch (err) {
     writeApplicationError_('jalankanPembersihanAkunHarian', err, 'sistem');
@@ -3906,6 +4102,20 @@ function constantTimeEquals_(a, b) {
   return diff === 0;
 }
 
+// v14: Google Sheets bisa mengubah teks "1.2.0" menjadi TANGGAL. Versi yang tidak
+// berbentuk angka.angka.angka dianggap kosong, dan sumber utamanya Script Properties.
+function normalizeVersion_(value) {
+  const text = value instanceof Date ? '' : String(value == null ? '' : value).trim();
+  return /^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(text) ? text : '';
+}
+function getLatestApkInfo_() {
+  const props = PropertiesService.getScriptProperties();
+  const config = getSystemConfig_();
+  const version = normalizeVersion_(props.getProperty('APK_LATEST_VERSION')) || normalizeVersion_(config.ApkVersiTerbaru);
+  const url = String(props.getProperty('APK_LATEST_URL') || config.ApkTautanUnduh || '').trim();
+  return { version: version, url: /^https:\/\//.test(url) ? url : '' };
+}
+
 function reportApkRelease(payload) {
   const expected = PropertiesService.getScriptProperties().getProperty('RELEASE_SECRET');
   if (!expected || expected.length < 24) return { success: false, message: 'RELEASE_SECRET belum diatur di Script Properties.' };
@@ -3916,11 +4126,13 @@ function reportApkRelease(payload) {
   const version = String(payload && payload.version || '').trim();
   if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(version)) return { success: false, message: 'Format versi harus angka.angka.angka.' };
   return withScriptLock_(function () {
-    const current = String(getSystemConfig_().ApkVersiTerbaru || '').trim();
+    const current = getLatestApkInfo_().version;
     if (current && compareVersionStrings_(version, current) <= 0) {
       return { success: true, changed: false, message: 'Versi ' + version + ' tidak lebih baru dari ' + current + '; tidak ada yang diubah.' };
     }
-    upsertSystemConfigValue_('ApkVersiTerbaru', version);
+    PropertiesService.getScriptProperties().setProperties({ APK_LATEST_VERSION: version, APK_LATEST_URL: APK_DOWNLOAD_URL });
+    // Tanda petik di depan memaksa Sheets menyimpan sebagai teks, bukan tanggal.
+    upsertSystemConfigValue_('ApkVersiTerbaru', "'" + version);
     upsertSystemConfigValue_('ApkTautanUnduh', APK_DOWNLOAD_URL);
     writeAuditLog_('RILIS_APK', 'github', version, APK_DOWNLOAD_URL);
     queuePush_({ all: true, platform: 'android' }, {
@@ -3930,5 +4142,552 @@ function reportApkRelease(payload) {
       url: APK_DOWNLOAD_URL
     });
     return { success: true, changed: true, version: version, url: APK_DOWNLOAD_URL };
+  });
+}
+
+// v15: isi FAQ bawaan. Dipakai sampai Admin pertama kali mengubah FAQ; setelah itu
+// isinya disalin ke sheet "FAQ" dan sheet itulah sumbernya.
+const FAQ_DEFAULTS = [
+  ["Mengenal aplikasi","warga","Apa itu Teras Tower 2?","Aplikasi warga Tower 2 Wisma Atlet Pademangan untuk menyampaikan aspirasi, menilai layanan, melihat agenda, menghubungi nomor penting, dan berbagi rekomendasi tempat di sekitar. Aplikasi dikelola pengurus Tower 2."],
+  ["Mengenal aplikasi","warga","Apa saja isi menu bawah?","Kontak Darurat untuk nomor yang perlu cepat dihubungi. Tombol tengah (Aspirasi) untuk mengirim masukan, kritik, atau pengaduan. Menu berisi semua layanan lain. Logo di kiri atas membawa Anda kembali ke Beranda."],
+  ["Mengenal aplikasi","warga","Apa yang tampil di Beranda?","Salam dan jam, pengumuman terbaru dari pengurus, banner kegiatan, agenda terdekat, dan ringkasan kepuasan layanan warga."],
+  ["Mengenal aplikasi","warga","Bagaimana memasang aplikasi di HP?","Android: unduh berkas APK dari tautan resmi pengurus, lalu izinkan pemasangan dari sumber tersebut saat diminta. iPhone: buka alamat aplikasi di Safari, tekan tombol Bagikan, lalu pilih “Tambahkan ke Layar Utama”."],
+  ["Mengenal aplikasi","warga","Bagaimana saya tahu ada versi baru?","Spanduk kuning muncul di dalam aplikasi dan HP Android menerima notifikasi. Tautan unduhan selalu sama, jadi cukup buka tautan itu lagi lalu pasang di atas versi lama. Data Anda tidak hilang."],
+  ["Akun & masuk","warga","Bagaimana cara mendaftar?","Di layar masuk, pilih Daftar. Isi username, PIN 6 angka, dan data diri, lalu lengkapi profil (status di wisma, lantai, unit, dan nomor WhatsApp)."],
+  ["Akun & masuk","warga","Kenapa profil harus dilengkapi dalam 7 hari?","Akun yang profilnya belum lengkap 7 hari setelah mendaftar dihapus otomatis supaya data warga tetap rapi. Pengingat muncul beberapa hari sebelumnya. Jika terhapus, Anda bisa mendaftar lagi."],
+  ["Akun & masuk","warga","Apa arti “Ingat saya”?","Jika dicentang, Anda tetap masuk selama 30 hari di HP itu. Tanpa centang, sesi berakhir setelah sekitar 6 jam. Jangan centang di HP milik orang lain."],
+  ["Akun & masuk","warga","Saya lupa PIN. Apa yang harus dilakukan?","Di layar masuk, tekan “Lupa PIN?” lalu isi username. Admin akan membuat PIN baru dan mengirimkannya ke WhatsApp Anda."],
+  ["Akun & masuk","warga","Bisakah saya mengganti PIN sendiri?","Belum. Untuk mengganti PIN, ajukan reset lewat “Lupa PIN?” atau hubungi Admin."],
+  ["Akun & masuk","warga","Bagaimana mengubah nomor WhatsApp, lantai, atau unit?","Buka Menu → Profil Saya. Nomor WhatsApp hanya bisa diubah oleh pemilik akun, Admin tidak dapat mengubahnya."],
+  ["Aspirasi & riwayat","warga","Apa beda Masukan, Kritik, dan Pengaduan?","Masukan: usulan perbaikan atau ide. Kritik: keberatan terhadap layanan atau kebijakan. Pengaduan: masalah nyata yang perlu ditangani, misalnya fasilitas rusak, kotor, atau tidak aman. Pengaduan bisa disertai foto dan tingkat prioritas."],
+  ["Aspirasi & riwayat","warga","Data pelapor diambil dari mana?","Nama, status, lantai, unit, dan nomor WhatsApp diambil dari profil Anda. Untuk mengubahnya, tekan “Ubah di Profil”."],
+  ["Aspirasi & riwayat","warga","Apa bedanya lokasi masalah dengan lantai/unit saya?","Lantai dan unit adalah tempat tinggal Anda. Lokasi masalah adalah tempat kejadiannya, misalnya lift, lobi, atau lantai lain."],
+  ["Aspirasi & riwayat","warga","Apa arti status di Riwayat?","Dibaca: aspirasi sudah diterima pengurus dan sedang ditangani. Diselesaikan: sudah ditindaklanjuti, kadang disertai catatan dan foto. Ditolak: tidak dapat diproses, alasannya tercantum di kartu aspirasi."],
+  ["Aspirasi & riwayat","warga","Apakah saya diberi tahu jika status berubah?","Ya. Aplikasi Android menerima notifikasi, dan tanda angka muncul di menu Riwayat."],
+  ["Aspirasi & riwayat","warga","Apa maksud kesediaan swadaya?","Pernyataan bahwa Anda bersedia ikut membantu, misalnya tenaga atau iuran, bila penyelesaiannya membutuhkan peran warga. Tidak wajib."],
+  ["Kepuasan layanan","warga","Layanan apa saja yang dinilai?","Pengelola Gedung, Pengelola Parkir, Pengelola Food Court, dan Paguyuban."],
+  ["Kepuasan layanan","warga","Bagaimana cara menilai?","Geser slider ke angka 0 (sangat tidak puas) sampai 100 (sangat puas), tambahkan komentar bila perlu, lalu tekan Kirim Penilaian pada layanan tersebut."],
+  ["Kepuasan layanan","warga","Berapa kali saya boleh menilai?","Satu kali per layanan setiap minggu. Layanan yang sudah dinilai terkunci sampai minggu berikutnya."],
+  ["Kepuasan layanan","warga","Siapa yang melihat penilaian saya?","Pengurus melihat rekap dan komentar untuk perbaikan layanan. Rata-rata seluruh warga tampil di Beranda."],
+  ["Kalender kerja","warga","Apa arti warna di kalender?","Merah: hari Minggu dan libur nasional. Jingga: hari Sabtu. Titik jingga: hari peringatan nasional. Titik biru: hari peringatan internasional. Kotak bergaris tebal: hari ini. Daftar hari libur dan peringatan bulan itu tampil di bawah kalender."],
+  ["Kalender kerja","warga","Bagaimana melihat detail agenda?","Sentuh tanggalnya. Detail agenda, nama hari libur, atau hari peringatan muncul di jendela kecil."],
+  ["Kalender kerja","warga","Bagaimana mengusulkan agenda?","Tekan “+ Usulkan agenda” atau pilih tanggal lalu tekan tombol usulan. Agenda tampil setelah disetujui Admin."],
+  ["Kalender kerja","warga","Waktu agenda memakai zona apa?","Semua jam memakai Waktu Indonesia Barat (WIB)."],
+  ["Kontak darurat & penting","warga","Apa beda Kontak Darurat dan Kontak Penting?","Kontak Darurat berisi nomor untuk keadaan genting seperti ambulans, pemadam kebakaran, polisi, dan rumah sakit. Kontak Penting berisi nomor sehari-hari di lingkungan Tower 2, misalnya pengelola dan keamanan."],
+  ["Kontak darurat & penting","warga","Bagaimana cara menghubungi?","Sentuh kotak kontak, lalu pilih Telepon atau WhatsApp."],
+  ["Kontak darurat & penting","warga","Nomornya salah atau sudah tidak aktif?","Sampaikan lewat Aspirasi (jenis Masukan) agar Admin memperbaikinya."],
+  ["Jelajah sekitar","warga","Apa itu Jelajah Sekitar?","Kumpulan rekomendasi tempat di sekitar Tower 2 dari sesama warga: kuliner, jasa, kesehatan, fasilitas umum, dan lainnya. Halaman depannya menampilkan tempat yang paling disukai warga dan yang baru ditambahkan."],
+  ["Jelajah sekitar","warga","Bagaimana mencari tempat?","Ketik di kolom cari (nama, jenis, tag, atau alamat), atau ketuk kategori. Hasil bisa diurutkan berdasarkan rating, jarak terdekat dari Tower 2, atau yang terbaru, dan disaring hanya yang Terverifikasi."],
+  ["Jelajah sekitar","warga","Bagaimana memberi rekomendasi?","Pilih Beri rekomendasi. Langkah 1: cari nama tempat atau alamatnya, pilih hasil yang tepat, lalu geser titik di peta bila perlu. Bisa juga memakai lokasi Anda saat sedang berada di sana. Langkah 2: pilih kategori dan jenis, ceritakan tempatnya, lalu kirim. Tidak perlu membuka Google Maps."],
+  ["Jelajah sekitar","warga","Tempatnya tidak ditemukan saat dicari. Bagaimana?","Tempat kecil kadang belum terdaftar di Google. Geser atau ketuk titik di peta tepat di lokasinya, lalu tulis namanya di langkah 2. Anda juga bisa menempel tautan Google Maps lewat pilihan di bawah peta."],
+  ["Jelajah sekitar","warga","Apa arti angka 1–5 pada kisaran harga?","Perkiraan harga per orang: 1 = di bawah Rp15 ribu, 2 = Rp15–30 ribu, 3 = Rp30–50 ribu, 4 = Rp50–100 ribu, 5 = di atas Rp100 ribu. Boleh dikosongkan."],
+  ["Jelajah sekitar","warga","Bagaimana memberi rating dan ulasan?","Buka detail tempat, pilih bintang, dan tulis komentar. Setiap akun punya satu ulasan per tempat dan bisa mengubahnya kapan saja."],
+  ["Jelajah sekitar","warga","Apa fungsi tombol Simpan, Bagikan ke WA, dan Rute?","Simpan menaruh tempat di daftar Simpanan saya. Bagikan ke WA mengirim nama, rating, alamat, dan tautan lokasi lewat WhatsApp. Rute membuka petunjuk arah di Google Maps."],
+  ["Jelajah sekitar","warga","Infonya salah atau tempatnya sudah tutup. Apa yang harus dilakukan?","Buka detail tempat, tekan Laporkan, pilih alasannya, lalu kirim. Admin langsung mendapat notifikasi untuk memeriksanya."],
+  ["Jelajah sekitar","warga","Bisakah mengubah rekomendasi yang sudah saya kirim?","Bisa. Buka detail tempat yang Anda kirim, lalu tekan Ubah rekomendasi saya."],
+  ["Jelajah sekitar","warga","Kenapa muncul peringatan tempat dengan nama mirip?","Supaya satu tempat tidak tercatat dua kali. Bila tempatnya sama, beri ulasan di tempat yang sudah ada. Bila memang berbeda, lanjutkan saja."],
+  ["Jelajah sekitar","warga","Apa arti tanda Terverifikasi?","Tempat tersebut sudah diperiksa Admin, misalnya lokasi dan namanya sudah dicocokkan."],
+  ["Notifikasi & masukan aplikasi","warga","Kenapa saya tidak menerima notifikasi?","Notifikasi hanya untuk aplikasi Android versi terbaru. Pastikan izin notifikasi diaktifkan saat diminta. Pengguna iPhone dan browser tetap bisa melihat pengumuman di Beranda."],
+  ["Notifikasi & masukan aplikasi","warga","Berapa lama pengumuman tampil di Beranda?","Pengumuman pengurus tampil di Beranda selama 3 hari."],
+  ["Notifikasi & masukan aplikasi","warga","Apa beda Masukan Pengembangan dengan Aspirasi?","Masukan Pengembangan khusus untuk aplikasi ini, misalnya ide fitur, tampilan, atau kendala, dan dibaca Super Admin. Masalah di gedung atau layanan disampaikan lewat Aspirasi. Status masukan bisa dilihat di tab Riwayat Saya."],
+  ["Untuk Admin","admin","Apa isi Kartu Pengelolaan?","Semua menu pengelolaan: warga, aspirasi, kepuasan, agenda, pengumuman, nomor penting dan darurat, Jelajah, FAQ, serta log. Tombol Layanan di menu bawah membuka layanan yang sama seperti yang dilihat warga, termasuk Profil dan halaman Bantuan & FAQ ini."],
+  ["Untuk Admin","admin","Bagaimana menindaklanjuti aspirasi?","Buka Kelola Aspirasi, pilih aspirasi, ubah statusnya, lalu isi catatan tindak lanjut (dan foto bila ada). Pengirim otomatis mendapat notifikasi saat status berubah. Aspirasi prioritas tinggi atau yang lebih dari 7 hari belum selesai ikut disorot di Perlu Tindakan."],
+  ["Untuk Admin","admin","Bagaimana mereset PIN warga?","Buka Kelola Warga, lalu tekan tombol 📨 pada warga tersebut. Sistem membuat PIN acak baru dan membuka draf WhatsApp berisi PIN itu. Pesan tidak terkirim otomatis, periksa dulu lalu kirim."],
+  ["Untuk Admin","admin","Apa arti “Data warga perlu diverifikasi”?","Ada isian lantai/unit yang tidak wajar, misalnya nomor unit tidak sesuai lantainya. Periksa dan perbaiki di Kelola Warga."],
+  ["Untuk Admin","admin","Bagaimana mengirim pengumuman?","Buka Kirim Pengumuman, isi judul dan isi. Pengumuman dikirim sebagai notifikasi ke semua HP Android dan tampil di Beranda selama 3 hari. Maksimal 10 pengumuman per jam."],
+  ["Untuk Admin","admin","Bagaimana mengelola agenda dan usulan warga?","Di Kelola Agenda, tambahkan agenda atau periksa usulan warga lalu setujui atau tolak. Agenda yang tidak dipakai bisa diarsipkan tanpa menghapus riwayatnya."],
+  ["Untuk Admin","admin","Bagaimana mengatur Nomor Penting dan Darurat?","Nomor Penting punya kategori Pengelola, Keamanan, dan Lainnya. Warga melihat kelompoknya bila kategorinya lebih dari satu. Satu kontak bisa punya beberapa nomor, pisahkan dengan koma."],
+  ["Untuk Admin","admin","Apa yang bisa diatur di Kelola Jelajah?","Empat tab: Tabel Rekomendasi (ubah, verifikasi, arsipkan, moderasi komentar), Kategori & Jenis, Laporan (laporan info salah dari warga), dan Pengaturan (titik Tower 2 dan pelengkapan titik lokasi data lama)."],
+  ["Untuk Admin","admin","Kenapa jarak belum tampil di Jelajah?","Jarak dihitung dari titik Tower 2 yang diatur di Kelola Jelajah → Pengaturan. Cara paling tepat: berdiri di Tower 2, tekan Pakai lokasi saya, lalu Simpan titik."],
+  ["Untuk Admin","admin","Bagaimana menangani laporan info salah?","Buka Kelola Jelajah → Laporan. Ubah tempatnya bila infonya salah, arsipkan bila tempatnya sudah tutup, lalu tekan Tandai selesai."],
+  ["Untuk Admin","admin","Apa fungsi Notifikasi dan Tandai semua dibaca?","Halaman Notifikasi merangkum data baru sejak terakhir Anda membuka tiap menu, ditambah daftar Perlu Tindakan. Tandai semua dibaca mengosongkan hitungan tanpa menghapus data."],
+  ["Untuk Admin","admin","Bagaimana mengubah isi FAQ?","Buka Kartu Pengelolaan → Kelola FAQ. Tambah, ubah, hapus, atau geser urutan pertanyaan. Pilih \"Tampil untuk\" agar pertanyaan hanya terlihat oleh peran tertentu. Perubahan langsung tampil di Bantuan & FAQ."],
+  ["Untuk Admin","admin","Apa itu Log Pengelolaan?","Catatan tindakan pengelolaan: siapa melakukan apa dan kapan. Admin melihat log miliknya sendiri; Super Admin melihat semuanya."],
+  ["Untuk Super Admin","super","Apa isi Kelola Aplikasi?","Empat tab: Warna & Tampilan (warna tema dan gambar latar), Banner (gambar bergilir di Beranda), Masukan (masukan pengembangan aplikasi dari warga), dan Penyimpanan (kapasitas data)."],
+  ["Untuk Super Admin","super","Apakah warna tema bebas dipilih?","Ya. Aplikasi otomatis menyesuaikan warna teks dan tombol agar tetap terbaca. Pratinjau di editor menunjukkan hasil yang sama dengan aplikasi."],
+  ["Untuk Super Admin","super","Apa arti tab Penyimpanan?","Google Sheets membatasi 10 juta sel per berkas, termasuk baris dan kolom kosong. Tab ini menunjukkan persentase terpakai dan perkiraan baris baru yang masih muat di tiap sheet. Peringatan muncul di Notifikasi pada 75% dan 90%, dan Admin mendapat notifikasi sekali per tingkat."],
+  ["Untuk Super Admin","super","Bagaimana mengosongkan penyimpanan?","Hapus baris dan kolom kosong di sheet terbesar (klik kanan → hapus baris/kolom), atau pindahkan data lama (misalnya aspirasi tahun lalu) ke berkas arsip lain."],
+  ["Untuk Super Admin","super","Hari libur di kalender datang dari mana?","Dari kalender publik Google “Hari Libur di Indonesia”, ditambah daftar hari internasional. Untuk koreksi, buat sheet HariLibur dengan kolom Tanggal | Nama | Jenis (Libur, Peringatan, Internasional, atau Hapus). Contoh tanggal: 2026-11-12."],
+  ["Untuk Super Admin","super","Apa isi Log Sistem?","Daftar kesalahan aplikasi selama 60 hari terakhir dan pemeriksaan struktur database. Gunakan saat ada laporan fitur yang tidak berjalan."],
+  ["Untuk Super Admin","super","Siapa yang bisa menambah Admin?","Hanya Super Admin, lewat Kelola Admin."]
+];
+
+// ===================================================================
+// v15 — BANTUAN & FAQ (dapat dikelola Admin)
+// -------------------------------------------------------------------
+// Sheet "FAQ": ID | Bagian | Peran | Pertanyaan | Jawaban | Urutan | UpdatedAt | UpdatedBy
+// Peran: warga (semua akun), admin (Admin & Super Admin), super (Super Admin).
+// Sebelum ada perubahan pertama, aplikasi memakai FAQ_DEFAULTS. Saat Admin pertama
+// kali menyimpan, isi bawaan disalin ke sheet (Script Property FAQ_SEEDED=1),
+// sehingga menghapus semua pertanyaan tidak memunculkan isi bawaan lagi.
+// ===================================================================
+const SHEET_FAQ = 'FAQ';
+const FAQ_HEADERS = ['ID', 'Bagian', 'Peran', 'Pertanyaan', 'Jawaban', 'Urutan', 'UpdatedAt', 'UpdatedBy'];
+const FAQ_ROLES = ['warga', 'admin', 'super'];
+
+function faqRolesFor_(role) {
+  if (role === 'super_admin') return ['warga', 'admin', 'super'];
+  if (role === 'admin') return ['warga', 'admin'];
+  return ['warga'];
+}
+function faqDefaultItems_() {
+  return FAQ_DEFAULTS.map(function (row, index) {
+    return { id: 'bawaan-' + (index + 1), bagian: row[0], peran: row[1], pertanyaan: row[2], jawaban: row[3], urutan: index + 1 };
+  });
+}
+function readFaqItems_() {
+  if (PropertiesService.getScriptProperties().getProperty('FAQ_SEEDED') !== '1') return faqDefaultItems_();
+  const sheet = getSheet_(SHEET_FAQ);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+  return getSheetData_(SHEET_FAQ).map(function (row) {
+    return { id: String(row.ID || ''), bagian: String(row.Bagian || 'Lainnya'), peran: FAQ_ROLES.indexOf(String(row.Peran)) >= 0 ? String(row.Peran) : 'warga',
+      pertanyaan: String(row.Pertanyaan || ''), jawaban: String(row.Jawaban || ''), urutan: Number(row.Urutan) || 0 };
+  }).filter(function (item) { return item.id && item.pertanyaan; }).sort(function (a, b) { return a.urutan - b.urutan; });
+}
+// Menyalin isi bawaan ke sheet bila belum pernah. Harus dipanggil di dalam withScriptLock_.
+function ensureFaqSheet_() {
+  const props = PropertiesService.getScriptProperties();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_FAQ);
+  if (!sheet) { sheet = ss.insertSheet(SHEET_FAQ); sheet.appendRow(FAQ_HEADERS); }
+  if (props.getProperty('FAQ_SEEDED') !== '1') {
+    const now = new Date();
+    const rows = faqDefaultItems_().map(function (item, index) {
+      return ['FAQ-' + ('00' + (index + 1)).slice(-3), item.bagian, item.peran, item.pertanyaan, item.jawaban, (index + 1) * 10, now, 'bawaan'];
+    });
+    if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, FAQ_HEADERS.length).clearContent();
+    if (rows.length) sheet.getRange(2, 1, rows.length, FAQ_HEADERS.length).setValues(rows);
+    props.setProperty('FAQ_SEEDED', '1');
+  }
+  return sheet;
+}
+function faqRowIndex_(sheet, id) {
+  const ids = sheet.getRange(1, 1, Math.max(sheet.getLastRow(), 1), 1).getValues();
+  for (let i = 1; i < ids.length; i++) if (String(ids[i][0]) === String(id)) return i + 1;
+  return -1;
+}
+function mapFaqId_(id) {
+  // ID bawaan "bawaan-N" berubah menjadi "FAQ-00N" setelah disalin ke sheet.
+  const m = String(id || '').match(/^bawaan-(\d+)$/);
+  return m ? 'FAQ-' + ('00' + m[1]).slice(-3) : String(id || '');
+}
+
+function getFaq(sessionToken) {
+  const session = requireSession_(sessionToken, ['resident', 'admin', 'super_admin']);
+  const allowed = faqRolesFor_(session.role);
+  const items = readFaqItems_().filter(function (item) { return allowed.indexOf(item.peran) >= 0; });
+  return { success: true, items: items, canEdit: session.role !== 'resident', editableRoles: session.role === 'super_admin' ? FAQ_ROLES : ['warga', 'admin'] };
+}
+
+function saveFaqItem(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['admin', 'super_admin']);
+  try {
+    const editable = session.role === 'super_admin' ? FAQ_ROLES : ['warga', 'admin'];
+    const peran = String(payload.peran || 'warga');
+    if (editable.indexOf(peran) < 0) throw new Error('Anda tidak dapat mengatur FAQ untuk peran ini.');
+    const bagian = validateString_(payload.bagian, 'Bagian', 2, 60);
+    const pertanyaan = validateString_(payload.pertanyaan, 'Pertanyaan', 5, 200);
+    const jawaban = validateString_(payload.jawaban, 'Jawaban', 5, 1500);
+    return withScriptLock_(function () {
+      const sheet = ensureFaqSheet_();
+      const now = new Date();
+      const id = mapFaqId_(payload.id);
+      if (id) {
+        const row = faqRowIndex_(sheet, id);
+        if (row < 0) throw new Error('Pertanyaan tidak ditemukan. Muat ulang halaman.');
+        const oldRole = String(sheet.getRange(row, 3).getValue());
+        if (editable.indexOf(oldRole) < 0) throw new Error('Anda tidak dapat mengubah pertanyaan ini.');
+        sheet.getRange(row, 2, 1, 4).setValues([[sheetText_(bagian), peran, sheetText_(pertanyaan), sheetText_(jawaban)]]);
+        sheet.getRange(row, 7, 1, 2).setValues([[now, session.username]]);
+        writeAuditLog_('UPDATE_FAQ', session.username, id, pertanyaan.substring(0, 80));
+        return { success: true, id: id, message: 'Pertanyaan disimpan.' };
+      }
+      const items = readFaqItems_();
+      const sameSection = items.filter(function (item) { return item.bagian === bagian; });
+      const maxOrder = (sameSection.length ? sameSection : items).reduce(function (m, item) { return Math.max(m, item.urutan); }, 0);
+      const newId = 'FAQ-' + Utilities.getUuid().substring(0, 8);
+      sheet.appendRow([newId, sheetText_(bagian), peran, sheetText_(pertanyaan), sheetText_(jawaban), maxOrder + 1, now, session.username]);
+      writeAuditLog_('ADD_FAQ', session.username, newId, pertanyaan.substring(0, 80));
+      return { success: true, id: newId, message: 'Pertanyaan ditambahkan.' };
+    });
+  } catch (err) { return { success: false, message: err.message }; }
+}
+
+function deleteFaqItem(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['admin', 'super_admin']);
+  try {
+    const editable = session.role === 'super_admin' ? FAQ_ROLES : ['warga', 'admin'];
+    return withScriptLock_(function () {
+      const sheet = ensureFaqSheet_();
+      const id = mapFaqId_(payload.id);
+      const row = faqRowIndex_(sheet, id);
+      if (row < 0) throw new Error('Pertanyaan tidak ditemukan. Muat ulang halaman.');
+      const values = sheet.getRange(row, 1, 1, 4).getValues()[0];
+      if (editable.indexOf(String(values[2])) < 0) throw new Error('Anda tidak dapat menghapus pertanyaan ini.');
+      sheet.deleteRow(row);
+      writeAuditLog_('DELETE_FAQ', session.username, id, String(values[3]).substring(0, 80));
+      return { success: true, message: 'Pertanyaan dihapus.' };
+    });
+  } catch (err) { return { success: false, message: err.message }; }
+}
+
+// Menggeser pertanyaan satu langkah ke atas/bawah di dalam bagiannya.
+function moveFaqItem(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['admin', 'super_admin']);
+  try {
+    const direction = Number(payload.direction) < 0 ? -1 : 1;
+    return withScriptLock_(function () {
+      const sheet = ensureFaqSheet_();
+      const id = mapFaqId_(payload.id);
+      const items = readFaqItems_();
+      const current = items.filter(function (item) { return item.id === id; })[0];
+      if (!current) throw new Error('Pertanyaan tidak ditemukan. Muat ulang halaman.');
+      const visible = faqRolesFor_(session.role);
+      const section = items.filter(function (item) { return item.bagian === current.bagian && visible.indexOf(item.peran) >= 0; });
+      const pos = section.indexOf(current);
+      const other = section[pos + direction];
+      if (!other) return { success: true, message: 'Sudah di ujung.' };
+      const rowA = faqRowIndex_(sheet, current.id), rowB = faqRowIndex_(sheet, other.id);
+      const orderA = current.urutan === other.urutan ? other.urutan + direction : other.urutan;
+      sheet.getRange(rowA, 6).setValue(orderA);
+      sheet.getRange(rowB, 6).setValue(current.urutan);
+      writeAuditLog_('MOVE_FAQ', session.username, id, direction < 0 ? 'naik' : 'turun');
+      return { success: true };
+    });
+  } catch (err) { return { success: false, message: err.message }; }
+}
+
+// ===================================================================
+// v16 — JELAJAH SEKITAR BARU
+// -------------------------------------------------------------------
+// • Titik lokasi (Lat/Lng/PlaceId), jam buka, harga skala 1–5 di sheet JelajahRekomendasi.
+// • Cari lokasi di dalam aplikasi lewat layanan Maps bawaan Apps Script (data Google,
+//   tanpa kunci API). Kuota akun Gmail: ±1.000 pencarian/hari — dibatasi 900/hari dan
+//   40/jam per akun agar aman. Hasil pencarian disimpan di cache 6 jam.
+// • Favorit (JelajahFavorit) dan laporan info salah (JelajahLaporan).
+// • Titik Tower 2 diatur Admin (SystemConfig TowerLat/TowerLng); jarak hanya tampil bila sudah diatur.
+// ===================================================================
+const SHEET_JELAJAH_FAVORIT = 'JelajahFavorit';
+const SHEET_JELAJAH_LAPORAN = 'JelajahLaporan';
+const JELAJAH_REC_HEADERS = ['ID', 'Timestamp', 'Username', 'NamaPengirim', 'Kategori', 'Jenis', 'NamaLokasi', 'TautanMaps', 'Alamat', 'Keterangan', 'Tagging', 'StatusVerifikasi', 'VerifikasiOleh', 'TanggalVerifikasi', 'StatusRekomendasi', 'Lat', 'Lng', 'PlaceId', 'JamBuka', 'Harga', 'UpdatedAt'];
+const JELAJAH_REPORT_REASONS = ['Tutup permanen', 'Lokasi salah', 'Info tidak sesuai', 'Lainnya'];
+const JELAJAH_PRICE_LABELS = ['', '< Rp15 rb', 'Rp15–30 rb', 'Rp30–50 rb', 'Rp50–100 rb', '> Rp100 rb'];
+// Batas wilayah "sekitar": Jabodetabek. Dipakai untuk bias pencarian dan validasi titik.
+const JELAJAH_BOUNDS = { south: -6.8, west: 106.3, north: -5.8, east: 107.3 };
+const JELAJAH_GEOCODE_DAILY_LIMIT = 900;
+const JELAJAH_GEOCODE_USER_HOURLY = 40;
+
+function getJelajahFavoriteSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_JELAJAH_FAVORIT);
+  if (!sheet) sheet = ss.insertSheet(SHEET_JELAJAH_FAVORIT);
+  ensureJelajahHeaders_(sheet, ['Username', 'RecommendationID', 'CreatedAt']);
+  return sheet;
+}
+function getJelajahReportSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_JELAJAH_LAPORAN);
+  if (!sheet) sheet = ss.insertSheet(SHEET_JELAJAH_LAPORAN);
+  ensureJelajahHeaders_(sheet, ['ID', 'RecommendationID', 'Username', 'NamaPelapor', 'Alasan', 'Catatan', 'CreatedAt', 'Status', 'DiprosesOleh', 'DiprosesPada']);
+  return sheet;
+}
+// Menulis satu baris berdasarkan nama kolom (urutan kolom di sheet boleh berbeda).
+function appendRowByHeaders_(sheet, record) {
+  const headers = sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), 1)).getValues()[0].map(String);
+  sheet.appendRow(headers.map(function (h) { return Object.prototype.hasOwnProperty.call(record, h) ? record[h] : ''; }));
+}
+function findRowByColumn_(sheet, header, value) {
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0].map(String);
+  const col = headers.indexOf(header);
+  if (col < 0) return { row: -1, headers: headers };
+  for (let i = 1; i < values.length; i++) if (String(values[i][col]) === String(value)) return { row: i + 1, headers: headers, values: values[i] };
+  return { row: -1, headers: headers };
+}
+function setRowValuesByHeaders_(sheet, rowNumber, headers, record) {
+  Object.keys(record).forEach(function (key) {
+    const col = headers.indexOf(key);
+    if (col >= 0) sheet.getRange(rowNumber, col + 1).setValue(record[key]);
+  });
+}
+
+function parseJelajahCoordinate_(lat, lng) {
+  const la = Number(lat), ln = Number(lng);
+  if (!isFinite(la) || !isFinite(ln) || lat === '' || lng === '' || lat == null || lng == null) return null;
+  if (la < JELAJAH_BOUNDS.south || la > JELAJAH_BOUNDS.north || ln < JELAJAH_BOUNDS.west || ln > JELAJAH_BOUNDS.east) return null;
+  return { lat: Math.round(la * 1e6) / 1e6, lng: Math.round(ln * 1e6) / 1e6 };
+}
+function getJelajahTowerLocation_() {
+  const cfg = getSystemConfig_();
+  return parseJelajahCoordinate_(cfg.TowerLat, cfg.TowerLng);
+}
+function buildJelajahMapsUrl_(name, coord, placeId) {
+  if (placeId) return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(name || (coord ? coord.lat + ',' + coord.lng : '')) + '&query_place_id=' + encodeURIComponent(placeId);
+  return 'https://www.google.com/maps/search/?api=1&query=' + coord.lat + ',' + coord.lng;
+}
+// Mengambil koordinat dari berbagai bentuk tautan Google Maps.
+function extractCoordsFromMapsUrl_(url) {
+  const text = decodeURIComponent(String(url || '')).replace(/\+/g, ' ');
+  const patterns = [/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/, /@(-?\d+\.\d+),(-?\d+\.\d+)/, /[?&](?:q|query|ll|destination|center)=(-?\d+\.\d+),\s*(-?\d+\.\d+)/, /\/place\/(-?\d+\.\d+),\s*(-?\d+\.\d+)/, /\/search\/(-?\d+\.\d+),\s*(-?\d+\.\d+)/];
+  for (let i = 0; i < patterns.length; i++) {
+    const m = text.match(patterns[i]);
+    if (m) { const c = parseJelajahCoordinate_(m[1], m[2]); if (c) return c; }
+  }
+  return null;
+}
+// Tautan pendek (maps.app.goo.gl / goo.gl) diikuti sampai 3 kali untuk mendapat tautan lengkap.
+function resolveMapsShortUrl_(url) {
+  let current = String(url || '');
+  for (let i = 0; i < 3; i++) {
+    if (!/^https:\/\/(maps\.app\.goo\.gl|goo\.gl)\//i.test(current)) return current;
+    const response = UrlFetchApp.fetch(current, { followRedirects: false, muteHttpExceptions: true });
+    const headers = response.getAllHeaders ? response.getAllHeaders() : (response.getHeaders ? response.getHeaders() : {});
+    const location = headers.Location || headers.location;
+    if (!location) return current;
+    current = Array.isArray(location) ? location[0] : String(location);
+  }
+  return current;
+}
+
+// ---------- kuota pencarian ----------
+function takeGeocodeBudget_(username) {
+  const cache = CacheService.getScriptCache();
+  const userKey = 'geo-user-' + String(username).toLowerCase();
+  const used = Number(cache.get(userKey) || 0);
+  if (used >= JELAJAH_GEOCODE_USER_HOURLY) throw new Error('Pencarian lokasi sudah terlalu sering. Coba lagi sekitar satu jam lagi, atau geser titik di peta.');
+  const props = PropertiesService.getScriptProperties();
+  const dayKey = 'GEOCODE_' + Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyyMMdd');
+  const daily = Number(props.getProperty(dayKey) || 0);
+  if (daily >= JELAJAH_GEOCODE_DAILY_LIMIT) throw new Error('Kuota pencarian lokasi hari ini sudah habis. Geser titik di peta atau pakai lokasi Anda saat ini.');
+  cache.put(userKey, String(used + 1), 3600);
+  props.setProperty(dayKey, String(daily + 1));
+}
+function geocodeResultToPlace_(result, tower) {
+  const loc = result && result.geometry && result.geometry.location;
+  const coord = loc ? parseJelajahCoordinate_(loc.lat, loc.lng) : null;
+  if (!coord) return null;
+  const components = result.address_components || [];
+  const types = result.types || [];
+  const isPlace = types.indexOf('establishment') >= 0 || types.indexOf('point_of_interest') >= 0;
+  const first = components[0] && components[0].long_name ? String(components[0].long_name) : '';
+  const address = String(result.formatted_address || '');
+  let name = isPlace && first ? first : address.split(',')[0];
+  let shortAddress = address;
+  if (name && shortAddress.indexOf(name + ', ') === 0) shortAddress = shortAddress.substring(name.length + 2);
+  return { nama: name, alamat: shortAddress.replace(/, Indonesia$/, ''), lat: coord.lat, lng: coord.lng, placeId: String(result.place_id || ''), tempat: isPlace,
+    jarak: tower ? Math.round(haversineMeters_(tower, coord)) : null };
+}
+function haversineMeters_(a, b) {
+  const R = 6371000, toRad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * toRad, dLng = (b.lng - a.lng) * toRad;
+  const h = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(a.lat * toRad) * Math.cos(b.lat * toRad) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function searchJelajahPlaces(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
+  const query = String(payload && payload.query || '').trim().replace(/\s+/g, ' ');
+  if (query.length < 3 || query.length > 120) return { success: false, message: 'Ketik minimal 3 huruf nama tempat atau alamat.' };
+  const tower = getJelajahTowerLocation_();
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'geo-q-' + Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, query.toLowerCase())).substring(0, 22);
+  const cached = cache.get(cacheKey);
+  let results;
+  if (cached) { try { results = JSON.parse(cached); } catch (ignore) {} }
+  if (!results) {
+    try { takeGeocodeBudget_(session.username); } catch (err) { return { success: false, message: err.message }; }
+    try {
+      const geocoder = Maps.newGeocoder().setRegion('id').setLanguage('id').setBounds(JELAJAH_BOUNDS.south, JELAJAH_BOUNDS.west, JELAJAH_BOUNDS.north, JELAJAH_BOUNDS.east);
+      const response = geocoder.geocode(query + (/jakarta|bekasi|tangerang|depok|bogor/i.test(query) ? '' : ', Jakarta'));
+      results = (response && response.results || []).map(function (r) { return geocodeResultToPlace_(r, null); }).filter(Boolean).slice(0, 6);
+      try { cache.put(cacheKey, JSON.stringify(results), 21600); } catch (ignore) {}
+    } catch (err) {
+      writeApplicationError_('searchJelajahPlaces', err, session.username);
+      return { success: false, message: 'Pencarian lokasi sedang tidak tersedia. Geser titik di peta atau pakai lokasi Anda.' };
+    }
+  }
+  results = results.map(function (r) { const copy = JSON.parse(JSON.stringify(r)); copy.jarak = tower ? Math.round(haversineMeters_(tower, r)) : null; return copy; });
+  if (tower) results.sort(function (a, b) { return a.jarak - b.jarak; });
+  return { success: true, results: results };
+}
+function reverseJelajahLocation(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
+  const coord = parseJelajahCoordinate_(payload && payload.lat, payload && payload.lng);
+  if (!coord) return { success: false, message: 'Titik berada di luar wilayah Jabodetabek.' };
+  try { takeGeocodeBudget_(session.username); } catch (err) { return { success: false, message: err.message }; }
+  try {
+    const response = Maps.newGeocoder().setLanguage('id').reverseGeocode(coord.lat, coord.lng);
+    const place = response && response.results && response.results[0] ? geocodeResultToPlace_(response.results[0], getJelajahTowerLocation_()) : null;
+    return { success: true, alamat: place ? (place.tempat ? place.alamat : [place.nama, place.alamat].filter(Boolean).join(', ')) : '' };
+  } catch (err) {
+    writeApplicationError_('reverseJelajahLocation', err, session.username);
+    return { success: true, alamat: '' };
+  }
+}
+
+// ---------- validasi isian rekomendasi (kirim & ubah) ----------
+function readJelajahRecommendationInput_(payload) {
+  const out = {
+    kategori: String(payload.kategori || '').trim(), jenis: String(payload.jenis || '').trim(),
+    namaLokasi: String(payload.namaLokasi || '').trim(), alamat: String(payload.alamat || '').trim(),
+    keterangan: String(payload.keterangan || '').trim(), jamBuka: String(payload.jamBuka || '').trim(),
+    harga: payload.harga === '' || payload.harga == null ? '' : Number(payload.harga),
+    coord: parseJelajahCoordinate_(payload.lat, payload.lng), placeId: String(payload.placeId || '').trim().substring(0, 300),
+    tautanMaps: String(payload.tautanMaps || '').trim()
+  };
+  const tags = Array.isArray(payload.tags) ? payload.tags : String(payload.tags || '').split(',');
+  out.tags = tags.map(function (tag) { return String(tag || '').trim().replace(/^#/, ''); }).filter(function (t, i, all) { return t && all.indexOf(t) === i; });
+  if (!out.kategori || out.kategori.length > 60) throw new Error('Kategori wajib dipilih.');
+  if (!out.jenis || out.jenis.length > 80) throw new Error('Jenis rekomendasi wajib dipilih.');
+  if (!out.namaLokasi || out.namaLokasi.length > 140) throw new Error('Nama tempat wajib diisi (maksimal 140 karakter).');
+  if (out.alamat.length > 240 || out.keterangan.length > 1200 || out.jamBuka.length > 80) throw new Error('Alamat, keterangan, atau jam buka terlalu panjang.');
+  if (out.tags.length > 8 || out.tags.some(function (tag) { return tag.length > 32; })) throw new Error('Maksimal 8 tag, masing-masing maksimal 32 karakter.');
+  if (out.harga !== '' && (out.harga < 1 || out.harga > 5 || Math.floor(out.harga) !== out.harga)) throw new Error('Kisaran harga harus 1 sampai 5.');
+  if ((payload.lat !== undefined && payload.lat !== '' && payload.lat !== null) && !out.coord) throw new Error('Titik lokasi berada di luar wilayah Jabodetabek.');
+  if (!out.coord) {
+    if (!isAllowedGoogleMapsUrl_(out.tautanMaps)) throw new Error('Pilih lokasi di peta terlebih dahulu.');
+    out.coord = extractCoordsFromMapsUrl_(out.tautanMaps);
+  }
+  if (out.coord && !out.tautanMaps) out.tautanMaps = buildJelajahMapsUrl_(out.namaLokasi, out.coord, out.placeId);
+  if (out.coord && out.placeId && !isAllowedGoogleMapsUrl_(out.tautanMaps)) out.tautanMaps = buildJelajahMapsUrl_(out.namaLokasi, out.coord, out.placeId);
+  return out;
+}
+function jelajahRecordFromInput_(input) {
+  return {
+    Kategori: sheetText_(input.kategori), Jenis: sheetText_(input.jenis), NamaLokasi: sheetText_(input.namaLokasi), TautanMaps: sheetText_(input.tautanMaps),
+    Alamat: sheetText_(input.alamat), Keterangan: sheetText_(input.keterangan), Tagging: sheetText_(input.tags.join(', ')),
+    Lat: input.coord ? input.coord.lat : '', Lng: input.coord ? input.coord.lng : '', PlaceId: sheetText_(input.placeId),
+    JamBuka: sheetText_(input.jamBuka), Harga: input.harga === '' ? '' : input.harga, UpdatedAt: new Date()
+  };
+}
+function jelajahSenderName_(username) {
+  const warga = getSheetData_(SHEET_WARGA).find(function (row) { return String(row.Username || '').toLowerCase() === String(username || '').toLowerCase(); });
+  return String(warga && warga.Nama || username);
+}
+
+function updateJelajahRecommendation(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
+  payload = payload || {};
+  const id = String(payload.id || '').trim();
+  let input;
+  try { input = readJelajahRecommendationInput_(payload); } catch (err) { return { success: false, message: err.message }; }
+  try {
+    return withScriptLock_(function () {
+      const sheet = getJelajahRecommendationSheet_();
+      const found = findRowByColumn_(sheet, 'ID', id);
+      if (found.row < 0) return { success: false, message: 'Rekomendasi tidak ditemukan. Muat ulang halaman.' };
+      const owner = String(found.values[found.headers.indexOf('Username')] || '');
+      const isOwner = owner.toLowerCase() === String(session.username).toLowerCase();
+      if (!isOwner && session.role === 'resident') return { success: false, message: 'Hanya pengirim yang dapat mengubah rekomendasi ini.' };
+      if (String(found.values[found.headers.indexOf('StatusRekomendasi')] || 'Aktif') === 'Dihapus') return { success: false, message: 'Rekomendasi ini sedang diarsipkan.' };
+      const catalog = getJelajahCatalog_();
+      const oldCategory = String(found.values[found.headers.indexOf('Kategori')] || ''), oldType = String(found.values[found.headers.indexOf('Jenis')] || '');
+      const unchangedCatalog = oldCategory === input.kategori && oldType === input.jenis;
+      if (!unchangedCatalog && (catalog.categories.indexOf(input.kategori) < 0 || (catalog.typesByCategory[input.kategori] || []).indexOf(input.jenis) < 0)) return { success: false, message: 'Kategori atau jenis sudah tidak tersedia.' };
+      setRowValuesByHeaders_(sheet, found.row, found.headers, jelajahRecordFromInput_(input));
+      writeAuditLog_('UPDATE_JELAJAH_RECOMMENDATION', session.username, id, isOwner ? 'oleh pengirim' : 'oleh admin');
+      return { success: true, message: 'Rekomendasi diperbarui.' };
+    });
+  } catch (err) {
+    writeApplicationError_('updateJelajahRecommendation', err, session.username);
+    return { success: false, message: 'Perubahan belum tersimpan. Coba lagi.' };
+  }
+}
+
+function toggleJelajahFavorite(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
+  const id = String(payload && payload.recommendationId || '').trim();
+  if (!id) return { success: false, message: 'Rekomendasi tidak valid.' };
+  return withScriptLock_(function () {
+    const sheet = getJelajahFavoriteSheet_();
+    const values = sheet.getDataRange().getValues();
+    const me = String(session.username).toLowerCase();
+    for (let i = values.length - 1; i >= 1; i--) {
+      if (String(values[i][0]).toLowerCase() === me && String(values[i][1]) === id) { sheet.deleteRow(i + 1); return { success: true, favorited: false, message: 'Dihapus dari Simpanan.' }; }
+    }
+    sheet.appendRow([sheetText_(session.username), id, new Date()]);
+    return { success: true, favorited: true, message: 'Disimpan ke Simpanan saya.' };
+  });
+}
+
+function submitJelajahReport(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
+  payload = payload || {};
+  const id = String(payload.recommendationId || '').trim();
+  const reason = String(payload.alasan || '');
+  const note = String(payload.catatan || '').trim();
+  if (JELAJAH_REPORT_REASONS.indexOf(reason) < 0) return { success: false, message: 'Pilih alasan laporan.' };
+  if (note.length > 500) return { success: false, message: 'Catatan maksimal 500 karakter.' };
+  try {
+    return withScriptLock_(function () {
+      const rec = getJelajahRecommendationRows_().find(function (row) { return String(row.ID || '') === id; });
+      if (!rec || String(rec.StatusRekomendasi || 'Aktif') === 'Dihapus') return { success: false, message: 'Rekomendasi tidak ditemukan.' };
+      const sheet = getJelajahReportSheet_();
+      const open = getSheetData_(SHEET_JELAJAH_LAPORAN).some(function (row) { return String(row.RecommendationID) === id && String(row.Username).toLowerCase() === String(session.username).toLowerCase() && String(row.Status || 'Baru') === 'Baru'; });
+      if (open) return { success: false, message: 'Laporan Anda untuk tempat ini masih menunggu ditinjau Admin.' };
+      const reportId = 'LAP-' + Utilities.getUuid().substring(0, 8);
+      appendRowByHeaders_(sheet, { ID: reportId, RecommendationID: id, Username: sheetText_(session.username), NamaPelapor: sheetText_(jelajahSenderName_(session.username)), Alasan: reason, Catatan: sheetText_(note), CreatedAt: new Date(), Status: 'Baru' });
+      writeAuditLog_('REPORT_JELAJAH', session.username, id, reason);
+      queuePush_({ admins: true }, { title: 'Laporan info Jelajah', body: reason + ': ' + String(rec.NamaLokasi || ''), page: 'kelolaJelajah' });
+      return { success: true, message: 'Terima kasih. Laporan dikirim ke Admin.' };
+    });
+  } catch (err) {
+    writeApplicationError_('submitJelajahReport', err, session.username);
+    return { success: false, message: 'Laporan belum terkirim. Coba lagi.' };
+  }
+}
+function resolveJelajahReport(payload) {
+  const session = requireJelajahAdmin_(payload && payload.sessionToken);
+  const id = String(payload && payload.id || '').trim();
+  return withScriptLock_(function () {
+    const sheet = getJelajahReportSheet_();
+    const found = findRowByColumn_(sheet, 'ID', id);
+    if (found.row < 0) return { success: false, message: 'Laporan tidak ditemukan.' };
+    setRowValuesByHeaders_(sheet, found.row, found.headers, { Status: 'Selesai', DiprosesOleh: sheetText_(session.username), DiprosesPada: new Date() });
+    writeAuditLog_('RESOLVE_JELAJAH_REPORT', session.username, id, '');
+    return { success: true, message: 'Laporan ditandai selesai.' };
+  });
+}
+function setJelajahTowerLocation(payload) {
+  const session = requireJelajahAdmin_(payload && payload.sessionToken);
+  const coord = parseJelajahCoordinate_(payload && payload.lat, payload && payload.lng);
+  if (!coord) return { success: false, message: 'Titik berada di luar wilayah Jabodetabek.' };
+  return withScriptLock_(function () {
+    upsertSystemConfigValue_('TowerLat', coord.lat);
+    upsertSystemConfigValue_('TowerLng', coord.lng);
+    writeAuditLog_('SET_TOWER_LOCATION', session.username, 'SystemConfig', coord.lat + ',' + coord.lng);
+    return { success: true, message: 'Titik Tower 2 disimpan.', tower: coord };
+  });
+}
+
+// Melengkapi titik lokasi rekomendasi lama dari tautan Maps-nya. Dipanggil pemicu harian
+// (maks 25 per hari) dan dari Kelola Jelajah. Yang gagal ditandai agar tidak dicoba terus.
+function fillJelajahCoordinates_(limit) {
+  const sheet = getJelajahRecommendationSheet_();
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0].map(String);
+  const col = function (h) { return headers.indexOf(h); };
+  let filled = 0, failed = 0, tried = 0, remaining = 0;
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+    if (String(row[col('Lat')]) !== '' && String(row[col('Lng')]) !== '') continue;
+    if (String(row[col('PlaceId')]) === 'tidak-ditemukan') continue;
+    if (tried >= limit) { remaining++; continue; }
+    tried++;
+    let coord = null;
+    try {
+      const url = String(row[col('TautanMaps')] || '');
+      coord = extractCoordsFromMapsUrl_(url) || extractCoordsFromMapsUrl_(resolveMapsShortUrl_(url));
+    } catch (ignore) {}
+    if (coord) { sheet.getRange(i + 1, col('Lat') + 1, 1, 2).setValues([[coord.lat, coord.lng]]); filled++; }
+    else { sheet.getRange(i + 1, col('PlaceId') + 1).setValue('tidak-ditemukan'); failed++; }
+  }
+  return { filled: filled, failed: failed, remaining: remaining };
+}
+function fillJelajahCoordinates(sessionToken) {
+  const session = requireJelajahAdmin_(sessionToken);
+  return withScriptLock_(function () {
+    const report = fillJelajahCoordinates_(60);
+    writeAuditLog_('FILL_JELAJAH_COORDINATES', session.username, 'JelajahRekomendasi', JSON.stringify(report));
+    return { success: true, report: report, message: report.filled + ' titik dilengkapi, ' + report.failed + ' tidak ditemukan' + (report.remaining ? ', ' + report.remaining + ' menunggu giliran' : '') + '.' };
   });
 }

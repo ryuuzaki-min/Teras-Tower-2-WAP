@@ -165,7 +165,74 @@ Saran: buat sekarang satu akun Google dan satu akun GitHub khusus "Pengurus Towe
 semuanya ke sana, dan pakai akun pribadi hanya sebagai admin tambahan. Serah terima berikutnya
 cukup mengganti siapa yang memegang akun pengurus itu.
 
-## 10. Tahap berikutnya
+## 10. Pembaruan v14 — tampilan, kontras, dan perbaikan spanduk versi
+
+- **Spanduk "versi baru" tidak muncul:** Google Sheets bisa mengubah teks `1.2.0` menjadi tanggal.
+  Versi terbaru kini disimpan di Script Properties (`APK_LATEST_VERSION`, `APK_LATEST_URL`) dan ditulis
+  ke SystemConfig sebagai teks. Setelah deploy v14, isi sekali Script Property
+  `APK_LATEST_VERSION` = `1.2.0` dan `APK_LATEST_URL` = tautan tetap (bagian 8), atau tunggu rilis berikutnya.
+- **Logo** tampil di header, layar login, dan layar lengkapi profil (tersemat di CSS, ikut versi web).
+- **Kontras:** warna teks dan tombol tema dihitung otomatis dari warna yang dipilih admin agar selalu
+  lolos WCAG (teks >= 5,2:1, tombol >= 4,5:1). Hasil audit: 30 pola teks di bawah standar menjadi 0.
+- **Token warna tahap 2:** 133 dari 149 warna langsung di CSS lama kini memakai token
+  (rincian: `docs/css-v14-laporan.txt`). Skor kepuasan memakai warna status yang terbaca.
+- Alat audit: `tools/test/visual_audit.py` (tangkapan layar) — jalankan ulang setelah perubahan tampilan.
+
+## 10b. Pembaruan v15 — hasil audit tampilan (versi 1.4.0)
+
+**Yang berubah**
+- **Editor warna tema** (Kelola Aplikasi): popup bawaan HP diganti editor di dalam aplikasi (kode hex, slider Rona/Kepekatan/Terang, 6 contoh warna logo, pratinjau). Warna tetap bebas.
+- **PIN**: semua kolom PIN memunculkan keyboard angka, tetap tersamar titik. Tombol mata tetap berfungsi.
+- **Label tanpa emoji** di semua formulir dan judul halaman. Emoji hanya dipakai di petak dan tombol.
+- **Formulir Aspirasi**: empat kolom profil yang terkunci diringkas jadi satu kartu "Data pelapor" + tautan "Ubah di Profil"; petak Jenis Aspirasi seragam (ikon di atas, teks di bawah).
+- **Notifikasi (admin)**: tombol "Tandai semua dibaca".
+- **Kepuasan**: tampil "Skor: 50" saja (konversi skala 5 tetap di server). Angka 0–100 kini tepat di bawah titik tengah bulatan slider.
+- **Kalender Kerja**: Sabtu jingga, Minggu & libur nasional merah, titik jingga untuk hari peringatan, tulisan miring "Tidak ada agenda bulan ini", dan keterangan warna. Ketuk tanggal untuk melihat nama hari libur/peringatan.
+- **Kontak Penting**: admin memilih kategori Pengelola/Keamanan/Lainnya. Warga melihat kelompok bila ada lebih dari satu kategori; bila semua satu kategori, tampilan tetap seperti dulu. Kolom `Kategori` ditambahkan otomatis di ujung sheet NomorPenting saat admin pertama kali menyimpan.
+- **Masukan Pengembangan**: dua tab — Kirim Masukan | Riwayat Saya.
+- **Kartu Pengelolaan**: warna kartu ikut tema.
+- **Menu admin**: tombol bawah "Pribadi 👤" menjadi "Layanan 🏘️" (halaman Layanan Warga, isinya sama dengan Menu warga termasuk Kalender Kerja).
+- **Kapasitas Spreadsheet**: Google membatasi 10 juta sel per berkas. Di 75% muncul peringatan kuning di halaman Notifikasi, di 90% merah, dan admin mendapat notifikasi push sekali per tingkat (dicek oleh pemicu harian yang sudah ada). Persentasenya juga tampil di Log Sistem → Kesehatan Database.
+
+- **Kelola Aplikasi** kini berupa tab: Warna & Tampilan · Banner · Masukan · Penyimpanan. Tab Penyimpanan menunjukkan persentase terpakai dan perkiraan baris baru yang masih muat per sheet. Peringatan kapasitas di Notifikasi bisa diketuk langsung ke tab ini.
+- **Kelola FAQ** (Kartu Pengelolaan, Admin & Super Admin): tambah, ubah, hapus, dan geser urutan pertanyaan; pilih "Tampil untuk" (Semua akun / Admin / Super Admin). Saat pertama kali diubah, isi bawaan disalin ke sheet baru **FAQ** dan sejak itu sheet itulah sumbernya. Admin membaca FAQ lewat Layanan → Bantuan & FAQ.
+- **Bantuan & FAQ** (menu baru untuk semua peran): penjelasan tiap fitur dan cara pakai. Admin melihat bagian "Untuk Admin", Super Admin juga "Untuk Super Admin". Isi bawaannya ada di `FAQ_DEFAULTS` di `Code.gs`. Karena penjelasan sudah pindah ke FAQ, teks keterangan di Menu, Kalender, Kepuasan, Kontak, Masukan, Log, dan Kelola Aplikasi dihapus.
+- **Kalender**: keterangan di bawah kalender berupa tiga baris untuk bulan yang tampil, yaitu Libur nasional (merah), Peringatan nasional (titik jingga), dan Peringatan internasional (titik biru). Hari internasional bertanggal tetap ada di daftar `INTERNATIONAL_DAYS` di `Code.gs`.
+
+**Hari libur otomatis**
+- Diambil dari kalender publik Google "Hari Libur di Indonesia" (tanpa login, disimpan 12 jam). Saat pertama kali, Apps Script mungkin meminta izin akses layanan eksternal — izin ini sama dengan yang dipakai notifikasi push.
+- Untuk koreksi (mis. cuti bersama SKB yang belum ada di Google, atau hari peringatan tambahan seperti Hari Ayah), buat sheet **HariLibur** dengan kolom `Tanggal | Nama | Jenis`. Jenis: `Libur`, `Peringatan`, `Internasional`, atau `Hapus` (menyembunyikan entri pada tanggal itu). Tulis tanggal sebagai `2026-11-12`.
+
+**Cara pasang**: salin `gas/Code.gs`, `gas/JavaScript.html`, `gas/Style.html`, `gas/Index.html` ke proyek Apps Script → Deploy → Kelola deployment → Versi baru. Rilis APK (tag `v1.4.0`) bisa menunggu sampai pengembangan Jelajah Sekitar selesai.
+
+## 10c. Pembaruan v16 — Jelajah Sekitar baru (masih versi 1.4.0)
+
+**Untuk warga**
+- Halaman depan: kolom cari sungguhan (nama, jenis, tag, alamat, keterangan), kategori dengan jumlah tempat, *Paling disukai warga*, *Baru ditambahkan*, dan *Simpanan saya*.
+- Hasil: urutkan Rating / Terdekat / Terbaru, saring Terverifikasi atau Simpanan, pilih jenis langsung dari baris tombol.
+- Detail: peta kecil, jam buka, kisaran harga, tombol **Rute**, **Bagikan ke WA**, **Simpan**, **Laporkan**, dan **Ubah rekomendasi saya** (khusus pengirim; Admin juga bisa).
+- Beri rekomendasi dua langkah: (1) cari tempat atau alamat **di dalam aplikasi**, geser titik di peta, atau pakai lokasi saat ini — tanpa menyalin tautan Maps; (2) kategori, jenis, cerita, jam buka, **harga skala 1–5** (1 = < Rp15 rb … 5 = > Rp100 rb per orang), dan tag yang tinggal diketuk. Muncul peringatan bila nama tempat mirip yang sudah ada.
+
+**Untuk Admin (Kelola Jelajah)**
+- Tab baru **Laporan** (laporan info salah dari warga; admin juga dapat notifikasi) dan **Pengaturan**.
+- **Pengaturan → Titik Tower 2: wajib diatur sekali.** Berdiri di Tower 2, tekan *Pakai lokasi saya*, lalu *Simpan titik*. Sebelum diatur, jarak tidak ditampilkan.
+- **Pengaturan → Lengkapi sekarang**: mengambil titik lokasi rekomendasi lama dari tautan Google Maps-nya (otomatis 25 per hari lewat pemicu harian).
+- Tombol **Ubah** di tabel rekomendasi.
+
+**Langkah pasang (penting)**
+1. Salin `gas/Code.gs`, `gas/JavaScript.html`, `gas/Style.html`, `gas/Index.html` ke Apps Script.
+2. Di editor Apps Script, pilih fungsi `aktifkanOtomatisasiTT2` lalu tekan **Jalankan** sekali. Google akan meminta **izin baru untuk layanan Maps** (pencarian lokasi). Setujui. Fungsi ini sekaligus memastikan pemicu harian (pembersihan akun, cek kapasitas, pelengkapan titik lokasi) aktif.
+3. Deploy → Kelola deployment → Versi baru.
+4. Buka Kelola Jelajah → Pengaturan → atur Titik Tower 2.
+5. Untuk APK: unggah zip ke GitHub (bongkar-zip) lalu rilis tag `v1.4.0`. APK baru menambahkan izin lokasi Android untuk tombol *Pakai lokasi saya*.
+
+**Catatan teknis**
+- Pencarian lokasi memakai layanan Maps bawaan Apps Script (data Google, tanpa kunci API). Batas akun Gmail ±1.000 pencarian/hari; aplikasi membatasi 900/hari dan 40/jam per akun, dan menyimpan hasil pencarian 6 jam.
+- Peta memakai Leaflet + OpenStreetMap (cadangan otomatis: CARTO). Butuh internet.
+- *Pakai lokasi saya* paling andal di APK dan PWA. Di versi web Apps Script, peramban bisa memblokirnya; warga tetap bisa menggeser titik di peta.
+- Sheet baru dibuat otomatis: `JelajahFavorit`, `JelajahLaporan`. Kolom baru di `JelajahRekomendasi`: Lat, Lng, PlaceId, JamBuka, Harga, UpdatedAt.
+
+## 11. Tahap berikutnya
 
 - Notifikasi push untuk versi iPhone/PWA (Web Push, iOS 16.4+).
 - Versi App Store/TestFlight (butuh akun Apple Developer).
