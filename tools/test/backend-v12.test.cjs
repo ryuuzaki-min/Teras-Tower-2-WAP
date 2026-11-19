@@ -548,4 +548,79 @@ test('v16 Jelajah: data lama dilengkapi titiknya dari tautan Maps (termasuk taut
   deq(again, { filled: 0, failed: 0, remaining: 0 }, 'yang gagal tidak dicoba terus');
 });
 
+// ---------------- v17 Keamanan ----------------
+test('v17: fungsi latar hanya dari pemicu terjadwal atau editor pemilik', function () {
+  const e = env();
+  // editor oleh pemilik
+  assert.ok(/Pemicu pembersihan harian aktif/.test(e.ctx.aktifkanOtomatisasiTT2()));
+  const trig = e.triggers[0];
+  // pengunjung web anonim (google.script.run) ditolak
+  e.setActiveEmail('');
+  assert.throws(function () { e.ctx.jalankanPembersihanAkunHarian(); }, /pemicu terjadwal atau pemilik/);
+  assert.throws(function () { e.ctx.aktifkanOtomatisasiTT2(); }, /pemicu terjadwal atau pemilik/);
+  assert.throws(function () { e.ctx.jalankanPembersihanAkunHarian({ triggerUid: 'tebak-tebakan' }); }, /pemicu terjadwal/, 'ID pemicu palsu ditolak');
+  assert.strictEqual(e.triggers.length, 1, 'pemicu tidak dibuat ulang oleh orang luar');
+  // pemicu terjadwal asli lolos
+  const r = e.ctx.jalankanPembersihanAkunHarian({ triggerUid: trig.getUniqueId() });
+  assert.ok(r && Array.isArray(r.deleted));
+  // orang lain yang login Google (bukan pemilik) juga ditolak
+  e.setActiveEmail('orang.lain@gmail.com');
+  assert.throws(function () { e.ctx.jalankanPembersihanAkunHarian(); });
+  const log = e.sheets.AuditLog && e.sheets.AuditLog.data.map(function (row) { return row.join('|'); }).join('\n');
+  assert.ok(/PANGGILAN_DITOLAK/.test(log || ''), 'percobaan tercatat di AuditLog');
+});
+
+test('v17: daftar nomor untuk halaman Kelola butuh sesi admin; warga tetap lewat getKontakData', function () {
+  const e = jelajahEnv();
+  e.sheets.NomorPenting = undefined;
+  const ctx = e.ctx;
+  ctx.SpreadsheetApp.getActiveSpreadsheet().insertSheet('NomorPenting');
+  ctx.SpreadsheetApp.getActiveSpreadsheet().insertSheet('NomorDarurat');
+  e.sheets.NomorPenting.data.push(['Nama', 'Nomor'], ['Pengelola', '0215550100']);
+  e.sheets.NomorDarurat.data.push(['Nama', 'Nomor'], ['Ambulans', '118']);
+  assert.throws(function () { ctx.getNomorPenting(); }, 'tanpa token ditolak');
+  assert.throws(function () { ctx.getNomorDarurat(login(e, 'budi')); }, 'warga ditolak');
+  assert.strictEqual(ctx.getNomorPenting(login(e, 'admin1'))[0].Nomor, '0215550100');
+  assert.strictEqual(ctx.getNomorDarurat(login(e, 'admin1'))[0].Nomor, '118');
+  const kontak = ctx.getKontakData();
+  assert.strictEqual(kontak.nomorPenting.length, 1); assert.strictEqual(kontak.nomorDarurat.length, 1);
+});
+
+test('v17 Jelajah: duplikat ditolak di server (PlaceId, nomor telepon, nama + lokasi)', function () {
+  const e = jelajahEnv();
+  const tb = login(e, 'budi'), ts = login(e, 'sari'), ta = login(e, 'admin1');
+  e.ctx.getJelajahSekitar(tb);
+  const base = { kategori: 'Restoran', jenis: 'Bakso' };
+  function kirim(token, extra) { return e.ctx.submitJelajahRecommendation(Object.assign({ sessionToken: token }, base, extra)); }
+  let r = kirim(tb, { namaLokasi: 'Bakso Pak Kumis', lat: -6.1301, lng: 106.8402, placeId: 'PLACE123', keterangan: 'Pesan antar WA 0812-3456-7890' });
+  assert.strictEqual(r.success, true, r.message);
+  const firstId = r.id;
+  // 1. PlaceId sama, nama beda
+  r = kirim(ts, { namaLokasi: 'Warung Bakso Kumis', lat: -6.1305, lng: 106.8405, placeId: 'PLACE123' });
+  assert.strictEqual(r.success, false); assert.strictEqual(r.duplicate.id, firstId); assert.ok(/lokasi Google yang sama/.test(r.message), r.message);
+  // 2. nomor telepon sama walau ditulis beda format dan tempat jauh
+  r = kirim(ts, { namaLokasi: 'Bakso Cabang Baru', lat: -6.2000, lng: 106.9000, alamat: 'Hubungi +62 812 3456 7890' });
+  assert.strictEqual(r.success, false); assert.ok(/nomor telepon yang sama \(081234567890\)/.test(r.message), r.message);
+  // 3. nama mirip dan berdekatan (< 300 m)
+  r = kirim(ts, { namaLokasi: 'bakso pak kumis!', lat: -6.1310, lng: 106.8410 });
+  assert.strictEqual(r.success, false); assert.ok(/nama yang sama di lokasi berdekatan/.test(r.message), r.message);
+  // admin juga tidak bisa membuat duplikat
+  assert.strictEqual(kirim(ta, { namaLokasi: 'Bakso Pak Kumis', lat: -6.1302, lng: 106.8401 }).success, false);
+  // boleh: nama sama tapi jauh (cabang lain), titik sama tapi nama beda (kios lain di gedung yang sama)
+  assert.strictEqual(kirim(ts, { namaLokasi: 'Bakso Pak Kumis', lat: -6.2200, lng: 106.8000 }).success, true, 'cabang jauh boleh');
+  assert.strictEqual(kirim(ts, { namaLokasi: 'Es Teh Manis Bu Ani', lat: -6.1301, lng: 106.8402 }).success, true, 'kios lain di titik sama boleh');
+  // harga, jam, nomor pendek seperti 118, atau tahun tidak dianggap telepon
+  assert.strictEqual(kirim(ts, { namaLokasi: 'Sate Madura', lat: -6.1500, lng: 106.8600, keterangan: 'Rp15.000-30.000, jam 10.00-22.00' }).success, true);
+  assert.strictEqual(kirim(tb, { namaLokasi: 'Soto Betawi', lat: -6.1600, lng: 106.8700, harga: 2, keterangan: 'Rp15.000-30.000' }).success, true, 'harga sama bukan duplikat');
+  assert.strictEqual(kirim(ts, { namaLokasi: 'Mie Ayam 2024', lat: -6.1400, lng: 106.8500, keterangan: 'Buka sejak 2019, telp darurat 118' }).success, true);
+  // ubah: tidak bentrok dengan dirinya sendiri, tetapi bentrok dengan yang lain
+  r = e.ctx.updateJelajahRecommendation(Object.assign({ sessionToken: tb, id: firstId }, base, { namaLokasi: 'Bakso Pak Kumis', lat: -6.1301, lng: 106.8402, placeId: 'PLACE123', harga: 2 }));
+  assert.strictEqual(r.success, true, r.message);
+  r = e.ctx.updateJelajahRecommendation(Object.assign({ sessionToken: tb, id: firstId }, base, { namaLokasi: 'Es Teh Manis Bu Ani', lat: -6.1301, lng: 106.8402 }));
+  assert.strictEqual(r.success, false, 'mengubah jadi tempat lain yang sudah ada ditolak');
+  // setelah diarsipkan admin, tempat yang sama boleh dikirim ulang
+  assert.strictEqual(e.ctx.setJelajahRecommendationDeleted({ sessionToken: ta, recommendationId: firstId, deleted: true }).success, true);
+  assert.strictEqual(kirim(ts, { namaLokasi: 'Bakso Pak Kumis', lat: -6.1301, lng: 106.8402, placeId: 'PLACE123' }).success, true, 'arsip tidak dihitung');
+});
+
 console.log('\n' + passed + ' uji backend v12 lulus');

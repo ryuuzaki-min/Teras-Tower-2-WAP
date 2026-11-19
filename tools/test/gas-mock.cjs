@@ -144,7 +144,7 @@ function createContext(options) {
         const spec = { handler: handler };
         const builder = { timeBased: function () { return builder; }, everyDays: function (n) { spec.everyDays = n; return builder; },
           atHour: function (h) { spec.atHour = h; return builder; }, inTimezone: function (tz) { spec.tz = tz; return builder; },
-          create: function () { const t = { spec: spec, getHandlerFunction: function () { return handler; } }; triggers.push(t); return t; } };
+          create: function () { const uid = 'trg-' + (triggers.length + 1) + '-' + handler; const t = { spec: spec, getHandlerFunction: function () { return handler; }, getUniqueId: function () { return uid; } }; triggers.push(t); return t; } };
         return builder;
       }
     },
@@ -154,7 +154,10 @@ function createContext(options) {
       insertSheet: function (n) { sheets[n] = makeSheet(n, []); return sheets[n]; },
       getSpreadsheetTimeZone: function () { return 'Asia/Jakarta'; }
     }; } },
-    Session: { getScriptTimeZone: function () { return 'Asia/Jakarta'; } },
+    Session: { getScriptTimeZone: function () { return 'Asia/Jakarta'; },
+      // Default meniru menjalankan dari editor oleh pemilik; uji pengunjung web memakai options.activeEmail = ''.
+      getActiveUser: function () { const e = options.activeEmail === undefined ? 'pemilik@contoh.id' : options.activeEmail; return { getEmail: function () { return e; } }; },
+      getEffectiveUser: function () { return { getEmail: function () { return 'pemilik@contoh.id'; } }; } },
     ContentService: {
       MimeType: { JSON: 'json' },
       createTextOutput: function (t) { return { text: t, setMimeType: function () { return this; }, getContent: function () { return t; } }; }
@@ -170,7 +173,9 @@ function createContext(options) {
     clearCache: function () { Object.keys(cacheStore).forEach(function (k) { delete cacheStore[k]; }); },
     lockHeld: function () { return lockHeld; },
     http: http,
-    triggers: triggers
+    triggers: triggers,
+    // v17: ganti identitas pemanggil di tengah uji ('' = pengunjung web anonim).
+    setActiveEmail: function (email) { options.activeEmail = email; }
   };
 }
 

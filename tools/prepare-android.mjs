@@ -91,4 +91,15 @@ if (existsSync(manifestPath)) {
     writeFileSync(manifestPath, manifest);
     console.log('Izin lokasi ditambahkan ke AndroidManifest.xml');
   }
+
+  // v17: matikan cadangan otomatis Android. Token sesi tersimpan di penyimpanan WebView;
+  // bila ikut dicadangkan ke Google Drive/pindah HP, sesi bisa berpindah ke perangkat lain.
+  manifest = readFileSync(manifestPath, 'utf8');
+  const before = manifest;
+  if (/android:allowBackup="[^"]*"/.test(manifest)) manifest = manifest.replace(/android:allowBackup="[^"]*"/, 'android:allowBackup="false"');
+  else manifest = manifest.replace(/<application\b/, '<application android:allowBackup="false"');
+  // Lalu lintas HTTP polos tidak diizinkan (semua server memakai HTTPS).
+  if (/android:usesCleartextTraffic="[^"]*"/.test(manifest)) manifest = manifest.replace(/android:usesCleartextTraffic="[^"]*"/, 'android:usesCleartextTraffic="false"');
+  else manifest = manifest.replace(/<application\b/, '<application android:usesCleartextTraffic="false"');
+  if (manifest !== before) { writeFileSync(manifestPath, manifest); console.log('allowBackup dan cleartext dimatikan di AndroidManifest.xml'); }
 }

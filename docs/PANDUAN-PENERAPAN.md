@@ -232,6 +232,29 @@ cukup mengganti siapa yang memegang akun pengurus itu.
 - *Pakai lokasi saya* paling andal di APK dan PWA. Di versi web Apps Script, peramban bisa memblokirnya; warga tetap bisa menggeser titik di peta.
 - Sheet baru dibuat otomatis: `JelajahFavorit`, `JelajahLaporan`. Kolom baru di `JelajahRekomendasi`: Lat, Lng, PlaceId, JamBuka, Harga, UpdatedAt.
 
+## 10d. Pembaruan v17 — penguatan keamanan (versi 1.4.1)
+
+Tidak ada perubahan tampilan bagi warga, kecuali pesan baru di Jelajah saat tempat yang dikirim sudah ada.
+
+**Yang berubah**
+- **Fungsi latar dikunci.** `jalankanPembersihanAkunHarian` dan `aktifkanOtomatisasiTT2` kini hanya bisa dijalankan oleh pemicu terjadwal proyek ini atau oleh pemilik skrip dari editor. Panggilan dari luar ditolak dan dicatat di `AuditLog` sebagai `PANGGILAN_DITOLAK`.
+- **Daftar nomor untuk halaman Kelola** (`getNomorPenting`, `getNomorDarurat`) kini butuh sesi Admin/Super Admin. Warga tetap melihat nomor lewat halaman Kontak seperti biasa.
+- **Jelajah menolak duplikat di server** (berlaku untuk semua peran, termasuk admin). Ditolak bila tempat aktif lain:
+  1. punya lokasi Google (PlaceId) yang sama, atau
+  2. memuat **nomor telepon yang sama** di alamat, jam buka, atau keterangan (format 08…, +62…, 021… dianggap sama), atau
+  3. **namanya sama/mirip dan titiknya < 300 m** (atau salah satunya belum punya titik).
+  Nama sama di tempat jauh (cabang lain) dan titik sama dengan nama berbeda (kios lain di satu gedung) tetap boleh. Rekomendasi yang diarsipkan tidak dihitung. Warga yang ditolak mendapat tombol **Lihat tempat itu** untuk memberi ulasan di sana.
+- **APK:** cadangan otomatis Android (`allowBackup`) dan lalu lintas HTTP polos dimatikan; debug WebView dimatikan. Sesi tidak ikut berpindah ke HP lain lewat cadangan Google.
+- **Build otomatis kini menjalankan uji backend dan pemeriksa keamanan** (`tools/regression_check.py`). Bila ada pengamanan yang hilang, build berhenti sebelum APK dibuat.
+
+**Langkah pasang**
+1. Salin keempat berkas `gas/` ke Apps Script.
+2. Deploy → Kelola deployment → Versi baru. **Tidak perlu** menjalankan `aktifkanOtomatisasiTT2` lagi; pemicu lama tetap berlaku.
+3. Unggah zip ke GitHub, tunggu build hijau, lalu rilis tag `v1.4.1`.
+4. Uji cepat: buka Kelola Nomor Penting sebagai admin (harus tampil), lalu coba kirim rekomendasi Jelajah yang sama dua kali (yang kedua harus ditolak).
+
+**Cadangan wajib (dari serah terima, butir A9).** Buka Apps Script → Setelan proyek → Properti skrip, lalu simpan nilai `PIN_HASH_PEPPER` di tempat aman (mis. pengelola kata sandi), bersama berkas `RAHASIA-…` APK. Bila nilai ini hilang, semua PIN warga tidak bisa diverifikasi lagi dan harus direset.
+
 ## 11. Tahap berikutnya
 
 - Notifikasi push untuk versi iPhone/PWA (Web Push, iOS 16.4+).

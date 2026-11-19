@@ -1,5 +1,5 @@
 // ===================================================================
-// TERAS TOWER 2 - Backend Apps Script (v16 - JELAJAH SEKITAR BARU, FAQ, AUDIT TAMPILAN)
+// TERAS TOWER 2 - Backend Apps Script (v17 - PENGUATAN KEAMANAN, CEK DUPLIKAT JELAJAH)
 // ===================================================================
 
 // SUPER ADMIN CREDENTIALS
@@ -1345,6 +1345,82 @@ function getJelajahSekitar(sessionToken) {
     }).reverse();
   return { success: true, tower: getJelajahTowerLocation_(), priceLabels: JELAJAH_PRICE_LABELS, reportReasons: JELAJAH_REPORT_REASONS, canManage: session.role !== 'resident', categories: catalog.categories, allCategories: catalog.allCategories, categoryActiveByName: catalog.categoryActiveByName, typesByCategory: catalog.typesByCategory, allTypesByCategory: catalog.allTypesByCategory, typeActiveByCategory: catalog.typeActiveByCategory, categoryIcons: catalog.categoryIcons, typeIconsByCategory: catalog.typeIconsByCategory, iconOptions: catalog.iconOptions, recommendations: recommendations };
 }
+// -------------------------------------------------------------------
+// v17 — CEK DUPLIKAT REKOMENDASI JELAJAH (di server, berlaku untuk semua peran)
+// Ditolak bila tempat aktif lain:
+//   1. punya PlaceId Google yang sama, atau
+//   2. memuat nomor telepon yang sama (dibaca dari alamat, jam buka, atau keterangan), atau
+//   3. namanya sama/mirip DAN titiknya berjarak < JELAJAH_DUPLICATE_RADIUS_M
+//      (atau salah satunya belum punya titik).
+// Nama saja tidak cukup (cabang waralaba di tempat lain tetap boleh), dan titik saja
+// tidak cukup (beberapa kios bisa berada di satu gedung/food court).
+// Rekomendasi yang diarsipkan (Dihapus) tidak dihitung.
+// -------------------------------------------------------------------
+const JELAJAH_DUPLICATE_RADIUS_M = 300;
+
+function jelajahNameKey_(text) {
+  return String(text || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function jelajahNamesMatch_(a, b) {
+  if (a.length < 3 || b.length < 3) return false;
+  if (a === b) return true;
+  return a.length >= 5 && b.length >= 5 && (a.indexOf(b) >= 0 || b.indexOf(a) >= 0);
+}
+
+// Nomor Indonesia: 08xx, +628xx, 628xx, atau nomor kantor 021-xxxx. Hasil dinormalkan ke 62xxxxxxxx.
+function jelajahPhoneNumbers_(text) {
+  const out = [];
+  const matches = String(text || '').match(/(?<![0-9.,])(?:\+?62[ .\-]?|\(?0)[1-9][0-9 ().\-]{6,16}[0-9]/g) || [];
+  matches.forEach(function (raw) {
+    let digits = raw.replace(/[^0-9]/g, '');
+    if (digits.charAt(0) === '0') digits = '62' + digits.substring(1);
+    if (digits.length >= 9 && digits.length <= 15 && out.indexOf(digits) < 0) out.push(digits);
+  });
+  return out;
+}
+
+function jelajahPhoneLabel_(digits) {
+  return '0' + String(digits).substring(2);
+}
+
+function findJelajahDuplicate_(input, ignoreId) {
+  const nameKey = jelajahNameKey_(input.namaLokasi);
+  const phones = jelajahPhoneNumbers_([input.alamat, input.jamBuka, input.keterangan].join(' '));
+  const placeId = String(input.placeId || '').trim();
+  const placeIdUsable = placeId && placeId !== 'tidak-ditemukan';
+  const rows = getJelajahRecommendationRows_();
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const id = String(row.ID || '');
+    if (!id || id === ignoreId || String(row.StatusRekomendasi || 'Aktif') === 'Dihapus') continue;
+    const name = String(row.NamaLokasi || '');
+    if (placeIdUsable && String(row.PlaceId || '').trim() === placeId) {
+      return { id: id, namaLokasi: name, reason: 'lokasi Google yang sama' };
+    }
+    if (phones.length) {
+      const rowPhones = jelajahPhoneNumbers_([row.Alamat, row.JamBuka, row.Keterangan].join(' '));
+      const shared = phones.filter(function (p) { return rowPhones.indexOf(p) >= 0; })[0];
+      if (shared) return { id: id, namaLokasi: name, reason: 'nomor telepon yang sama (' + jelajahPhoneLabel_(shared) + ')' };
+    }
+    if (jelajahNamesMatch_(nameKey, jelajahNameKey_(name))) {
+      const rowCoord = parseJelajahCoordinate_(row.Lat, row.Lng);
+      if (!input.coord || !rowCoord) return { id: id, namaLokasi: name, reason: 'nama yang sama' };
+      if (haversineMeters_(input.coord, rowCoord) < JELAJAH_DUPLICATE_RADIUS_M) return { id: id, namaLokasi: name, reason: 'nama yang sama di lokasi berdekatan' };
+    }
+  }
+  return null;
+}
+
+function jelajahDuplicateResponse_(dup) {
+  return {
+    success: false,
+    duplicate: { id: dup.id, namaLokasi: dup.namaLokasi },
+    message: '"' + dup.namaLokasi + '" sudah ada di Jelajah Sekitar (' + dup.reason + '). Beri ulasan di tempat itu bila sama, atau ubah nama/titiknya bila memang tempat berbeda.'
+  };
+}
+
 function submitJelajahRecommendation(payload) {
   const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
   payload = payload || {};
@@ -1355,6 +1431,8 @@ function submitJelajahRecommendation(payload) {
     return withScriptLock_(function () {
       const catalog = getJelajahCatalog_();
       if (catalog.categories.indexOf(input.kategori) < 0 || (catalog.typesByCategory[input.kategori] || []).indexOf(input.jenis) < 0) return { success: false, message: 'Kategori atau jenis sudah tidak tersedia. Muat ulang halaman dan pilih kembali.' };
+      const dup = findJelajahDuplicate_(input, '');
+      if (dup) return jelajahDuplicateResponse_(dup);
       const id = Utilities.getUuid();
       const record = jelajahRecordFromInput_(input);
       record.ID = id; record.Timestamp = new Date(); record.Username = sheetText_(session.username); record.NamaPengirim = sheetText_(senderName);
@@ -2657,7 +2735,12 @@ function updateTindakLanjut(payload) {
 // ===================================================================
 // NOMOR PENTING & DARURAT
 // ===================================================================
-function getNomorPenting() { return getSheetData_(SHEET_NOMORPENTING); }
+// v17: versi publik hanya untuk halaman Kelola (admin). Warga membaca lewat getKontakData.
+function getNomorPentingData_() { return getSheetData_(SHEET_NOMORPENTING); }
+function getNomorPenting(sessionToken) {
+  requireSession_(sessionToken, ['admin', 'super_admin']);
+  return getNomorPentingData_();
+}
 // v15: pastikan sheet punya kolom berjudul `header`; kembalikan nomor kolomnya (1-based).
 function ensureSheetColumn_(sheet, header) {
   const lastCol = Math.max(sheet.getLastColumn(), 1);
@@ -2668,7 +2751,11 @@ function ensureSheetColumn_(sheet, header) {
   sheet.getRange(1, col).setValue(header);
   return col;
 }
-function getNomorDarurat() { return getSheetData_(SHEET_NOMORDARURAT); }
+function getNomorDaruratData_() { return getSheetData_(SHEET_NOMORDARURAT); }
+function getNomorDarurat(sessionToken) {
+  requireSession_(sessionToken, ['admin', 'super_admin']);
+  return getNomorDaruratData_();
+}
 
 function saveNomorPenting(payload) {
   const session = requireSession_(payload && payload.sessionToken, ['admin', 'super_admin']);
@@ -3147,8 +3234,8 @@ function testKoneksi_() {
 
 function getKontakData() {
   return {
-    nomorPenting: getNomorPenting(),
-    nomorDarurat: getNomorDarurat()
+    nomorPenting: getNomorPentingData_(),
+    nomorDarurat: getNomorDaruratData_()
   };
 }
 
@@ -3739,7 +3826,30 @@ function runAccountCleanup_(options) {
 }
 
 // Dipanggil pemicu harian. Aman bila terpanggil lebih dari sekali sehari: hasilnya sama.
-function jalankanPembersihanAkunHarian() {
+// v17: hanya boleh berjalan dari pemicu terjadwal proyek ini atau dari editor oleh pemilik.
+// Tanpa penjaga ini, siapa pun bisa memanggilnya lewat google.script.run di versi web.
+function isTrustedBackgroundCall_(e) {
+  try {
+    if (e && e.triggerUid) {
+      const uid = String(e.triggerUid);
+      return ScriptApp.getProjectTriggers().some(function (t) { return String(t.getUniqueId()) === uid; });
+    }
+    const active = String(Session.getActiveUser().getEmail() || '').trim().toLowerCase();
+    const effective = String(Session.getEffectiveUser().getEmail() || '').trim().toLowerCase();
+    return !!active && active === effective;
+  } catch (err) {
+    return false;
+  }
+}
+
+function requireTrustedBackgroundCall_(e, name) {
+  if (isTrustedBackgroundCall_(e)) return;
+  writeAuditLog_('PANGGILAN_DITOLAK', 'anonim', name, 'Fungsi latar dipanggil dari luar pemicu/editor');
+  throw new Error('Fungsi ini hanya dapat dijalankan oleh pemicu terjadwal atau pemilik skrip.');
+}
+
+function jalankanPembersihanAkunHarian(e) {
+  requireTrustedBackgroundCall_(e, 'jalankanPembersihanAkunHarian');
   try {
     const report = runAccountCleanup_();
     console.log('Pembersihan akun: ' + JSON.stringify(report));
@@ -3755,7 +3865,8 @@ function jalankanPembersihanAkunHarian() {
 // Jalankan SEKALI dari editor Apps Script (pilih fungsi ini lalu klik Jalankan).
 // Membuat pemicu harian pembersihan akun dan sekaligus meminta izin yang
 // dibutuhkan notifikasi push (akses ke layanan eksternal).
-function aktifkanOtomatisasiTT2() {
+function aktifkanOtomatisasiTT2(e) {
+  requireTrustedBackgroundCall_(e, 'aktifkanOtomatisasiTT2');
   const handler = 'jalankanPembersihanAkunHarian';
   ScriptApp.getProjectTriggers().forEach(function (trigger) {
     if (trigger.getHandlerFunction() === handler) ScriptApp.deleteTrigger(trigger);
@@ -4583,6 +4694,8 @@ function updateJelajahRecommendation(payload) {
       const oldCategory = String(found.values[found.headers.indexOf('Kategori')] || ''), oldType = String(found.values[found.headers.indexOf('Jenis')] || '');
       const unchangedCatalog = oldCategory === input.kategori && oldType === input.jenis;
       if (!unchangedCatalog && (catalog.categories.indexOf(input.kategori) < 0 || (catalog.typesByCategory[input.kategori] || []).indexOf(input.jenis) < 0)) return { success: false, message: 'Kategori atau jenis sudah tidak tersedia.' };
+      const dup = findJelajahDuplicate_(input, id);
+      if (dup) return jelajahDuplicateResponse_(dup);
       setRowValuesByHeaders_(sheet, found.row, found.headers, jelajahRecordFromInput_(input));
       writeAuditLog_('UPDATE_JELAJAH_RECOMMENDATION', session.username, id, isOwner ? 'oleh pengirim' : 'oleh admin');
       return { success: true, message: 'Rekomendasi diperbarui.' };

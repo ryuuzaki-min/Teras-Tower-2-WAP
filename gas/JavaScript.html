@@ -2045,7 +2045,16 @@
     const label = d.id ? 'Simpan perubahan' : 'Kirim rekomendasi';
     if (button) { button.disabled = true; button.textContent = 'Menyimpan…'; }
     const runner = runServerWithLoader().withSuccessHandler(function (result) {
-      if (!result || !result.success) { if (button) { button.disabled = false; button.textContent = label; } showAppNotice((result && result.message) || 'Belum tersimpan.', 'error'); return; }
+      if (!result || !result.success) {
+        if (button) { button.disabled = false; button.textContent = label; }
+        // v17: server menolak duplikat; tawarkan membuka tempat yang sudah ada.
+        if (result && result.duplicate && result.duplicate.id) {
+          const dupId = String(result.duplicate.id);
+          showAppDialog(result.message, { title: 'Tempat sudah ada', confirm: true, confirmText: 'Lihat tempat itu', onConfirm: function () { openJelajahDetail(dupId); } });
+          return;
+        }
+        showAppNotice((result && result.message) || 'Belum tersimpan.', 'error'); return;
+      }
       showAppNotice(result.message || 'Tersimpan.');
       const name = payload.namaLokasi;
       jelajahDraft = null;
@@ -4163,7 +4172,7 @@
     runServerWithLoader()
       .withSuccessHandler(buildKelolaNomorPentingHTML)
       .withFailureHandler(function (err) { content.innerHTML = getTopBar('Kelola Nomor Penting') + '<div class="empty-state">Gagal memuat data.</div>' + getCopyrightFooter(); console.error(err); })
-      .getNomorPenting();
+      .getNomorPenting(currentUser.sessionToken);
   }
 
   function buildKelolaNomorPentingHTML(list) {
@@ -4212,7 +4221,7 @@
     runServerWithLoader()
       .withSuccessHandler(buildKelolaNomorDaruratHTML)
       .withFailureHandler(function (err) { content.innerHTML = getTopBar('Kelola Nomor Darurat') + '<div class="empty-state">Gagal memuat data.</div>' + getCopyrightFooter(); console.error(err); })
-      .getNomorDarurat();
+      .getNomorDarurat(currentUser.sessionToken);
   }
 
   function buildKelolaNomorDaruratHTML(list) {
