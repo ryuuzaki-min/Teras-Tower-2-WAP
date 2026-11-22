@@ -4,7 +4,7 @@
 const path = require('path');
 const assert = require('assert');
 const crypto = require('crypto');
-const { createContext } = require('./gas-mock.cjs');
+const { createContext, FORMULA_HITS } = require('./gas-mock.cjs');
 const CODE = path.join(__dirname, '..', '..', 'gas', 'Code.gs');
 const DAY = 24 * 3600 * 1000;
 const START = Date.UTC(2026, 10, 17, 5, 0, 0);
@@ -148,6 +148,8 @@ test('mode uji: tidak menghapus, hanya mencatat; mode mati: tidak menyentuh apa 
   deq(r.deleted, []);
   assert.ok(wargaRow(e, 'lama'));
   e.sheets.SystemConfig.data[1][1] = 'mati';
+  // v18: SystemConfig di-cache 60 detik; ketikan langsung di Sheets berlaku setelah itu.
+  e.advance(61 * 1000);
   assert.strictEqual(e.ctx.jalankanPembersihanAkunHarian().mode, 'mati');
   assert.ok(wargaRow(e, 'lama'));
 });
@@ -621,6 +623,190 @@ test('v17 Jelajah: duplikat ditolak di server (PlaceId, nomor telepon, nama + lo
   // setelah diarsipkan admin, tempat yang sama boleh dikirim ulang
   assert.strictEqual(e.ctx.setJelajahRecommendationDeleted({ sessionToken: ta, recommendationId: firstId, deleted: true }).success, true);
   assert.strictEqual(kirim(ts, { namaLokasi: 'Bakso Pak Kumis', lat: -6.1301, lng: 106.8402, placeId: 'PLACE123' }).success, true, 'arsip tidak dihitung');
+});
+
+// ---------------- v18 ----------------
+function addSheet(e, name, rows) {
+  e.ctx.SpreadsheetApp.getActiveSpreadsheet().insertSheet(name);
+  rows.forEach(function (r) { e.sheets[name].data.push(r); });
+}
+
+test('v18 A8 simulasi: isi berawalan = + - @ tidak pernah menjadi rumus di sheet mana pun', function () {
+  FORMULA_HITS.length = 0;
+  const e = jelajahEnv({ config: [['PembersihanAkun', 'aktif']] });
+  addSheet(e, 'RefData', [['Status_Wisma', 'Kategori'], ['Penyewa', 'Kebersihan'], ['Penghuni BAST', '']]);
+  const evil = '=HYPERLINK("http://jahat.example","klik")';
+  // registrasi + profil
+  e.ctx.registerUser({ username: 'dina', pin: '123456', pinConfirm: '123456' });
+  const td = login(e, 'dina');
+  let r = e.ctx.updateProfile({ sessionToken: td, nama: evil, nomorWhatsApp: '081234567890', statusWisma: 'Penyewa', lantai: '', unit: '' });
+  assert.strictEqual(r.success, true, r.message);
+  // Jelajah: rekomendasi, ulasan, laporan
+  e.ctx.getJelajahSekitar(td);
+  r = e.ctx.submitJelajahRecommendation({ sessionToken: td, kategori: 'Restoran', jenis: 'Bakso', namaLokasi: '+cmd|calc', lat: -6.13, lng: 106.84, keterangan: '-2+3 enak', alamat: '@SUM(1,2)', jamBuka: '=NOW()' });
+  assert.strictEqual(r.success, true, r.message);
+  const recId = r.id;
+  assert.strictEqual(e.ctx.submitJelajahReview({ sessionToken: login(e, 'budi'), recommendationId: recId, rating: 5, comment: '=IMPORTXML("x","y")' }).success, true);
+  e.ctx.submitJelajahReport({ sessionToken: login(e, 'sari'), recommendationId: recId, alasan: 'Sudah tutup', catatan: '@catatan' });
+  // masukan aplikasi
+  e.ctx.submitAppFeedback({ sessionToken: td, nama: evil, kategori: 'Lainnya', masukan: '=1+1 tolong perbaiki ya' });
+  // agenda: buat lalu ubah (jalur baca-ubah-tulis baris utuh)
+  const ta = login(e, 'admin1');
+  r = e.ctx.saveAgenda({ sessionToken: ta, date: '2026-12-01', startTime: '09:00', endTime: '10:00', title: '-Kerja bakti', location: '+Lobi', detail: '=bawa sapu' });
+  assert.strictEqual(r.success, true, r.message);
+  const agendaId = r.id || (e.sheets.AgendaTower2 && e.sheets.AgendaTower2.data[1][0]);
+  r = e.ctx.saveAgenda({ sessionToken: ta, id: agendaId, date: '2026-12-01', startTime: '09:00', endTime: '11:00', title: '-Kerja bakti', location: '+Lobi', detail: '=bawa sapu' });
+  assert.strictEqual(r.success, true, r.message);
+  // pembersihan otomatis menyalin baris ke arsip
+  e.ctx.registerUser({ username: 'lupa', pin: '123456', pinConfirm: '123456' });
+  const lupaRow = wargaRow(e, 'lupa'); lupaRow[col(e, 'Nama')] = '=IMPORTRANGE("x","y")';
+  e.advance(8 * DAY);
+  e.ctx.jalankanPembersihanAkunHarian();
+  // hapus akun mandiri (scrub per sel)
+  r = e.ctx.deleteMyAccount({ sessionToken: login(e, 'dina'), pin: '123456', konfirmasi: 'HAPUS' });
+  assert.strictEqual(r.success, true, r.message);
+  assert.deepStrictEqual(FORMULA_HITS.map(function (h) { return h.sheet + ': ' + h.value; }), [], 'tidak boleh ada teks yang menjadi rumus');
+});
+
+test('v18: hapus akun mandiri menghapus data pribadi dan menganonimkan isi yang dibagikan', function () {
+  const e = jelajahEnv();
+  addSheet(e, 'RefData', [['Status_Wisma'], ['Penyewa']]);
+  addSheet(e, 'Data Aspirasi', [['ID', 'Timestamp', 'Username', 'Email_Pengisi', 'Nama', 'Status_Wisma', 'Lantai', 'Unit', 'Nomor_WhatsApp', 'Detail_Aspirasi'],
+    ['a1', new Date(), 'budi', 'budi', 'Budi', 'Penghuni', '03', '0301', '628120000', 'Lampu mati'],
+    ['a2', new Date(), 'sari', 'sari', 'Sari', 'Penghuni', '04', '0402', '628130000', 'Air bocor']]);
+  const tb = login(e, 'budi');
+  e.ctx.getJelajahSekitar(tb);
+  const rec = e.ctx.submitJelajahRecommendation({ sessionToken: tb, kategori: 'Restoran', jenis: 'Bakso', namaLokasi: 'Bakso Budi', lat: -6.13, lng: 106.84 });
+  e.ctx.toggleJelajahFavorite({ sessionToken: tb, recommendationId: rec.id });
+  e.ctx.submitJelajahReview({ sessionToken: tb, recommendationId: rec.id, rating: 4, comment: 'Enak' });
+  // ditolak: konfirmasi salah, PIN salah, admin
+  assert.strictEqual(e.ctx.deleteMyAccount({ sessionToken: tb, pin: '123456', konfirmasi: 'hapus dong' }).success, false);
+  assert.strictEqual(e.ctx.deleteMyAccount({ sessionToken: tb, pin: '000000', konfirmasi: 'HAPUS' }).success, false);
+  assert.ok(wargaRow(e, 'budi'), 'PIN salah tidak menghapus');
+  assert.strictEqual(e.ctx.deleteMyAccount({ sessionToken: login(e, 'admin1'), pin: '123456', konfirmasi: 'HAPUS' }).success, false, 'admin tidak bisa hapus diri');
+  // berhasil
+  const r = e.ctx.deleteMyAccount({ sessionToken: tb, pin: '123456', konfirmasi: 'hapus' });
+  assert.strictEqual(r.success, true, r.message);
+  assert.ok(!wargaRow(e, 'budi'), 'baris akun hilang');
+  assert.throws(function () { e.ctx.getJelajahSekitar(tb); }, /Sesi/, 'sesi lama tidak berlaku');
+  assert.strictEqual(e.ctx.loginWithPin({ username: 'budi', pin: '123456' }).success, false, 'tidak bisa login lagi');
+  const asp = e.sheets['Data Aspirasi'].data;
+  assert.deepStrictEqual(asp[1].slice(2, 10), ['', '', 'Warga (akun dihapus)', 'Penghuni', '03', '', '', 'Lampu mati'], 'aspirasi tetap, identitas hilang');
+  assert.strictEqual(asp[2][4], 'Sari', 'aspirasi warga lain tidak tersentuh');
+  const recRow = e.sheets.JelajahRekomendasi.data.find(function (row) { return row[0] === rec.id; });
+  assert.strictEqual(recRow[2], ''); assert.strictEqual(recRow[3], 'Warga (akun dihapus)');
+  assert.ok(!e.sheets.JelajahFavorit.data.slice(1).some(function (row) { return row[0] === 'budi'; }), 'simpanan dihapus');
+  const arsip = e.sheets.ArsipAkunDihapus.data;
+  const last = arsip[arsip.length - 1];
+  assert.strictEqual(last[1], 'Dihapus sendiri oleh pemilik akun');
+  assert.ok(last.indexOf('Budi') < 0 && last.indexOf('0812') < 0, 'arsip tidak menyimpan nama/WA');
+  // tempatnya tetap ada untuk warga lain, tanpa nama
+  const list = e.ctx.getJelajahSekitar(login(e, 'sari')).recommendations;
+  assert.strictEqual(list.find(function (x) { return x.id === rec.id; }).namaPengirim, 'Warga Tower 2');
+});
+
+test('v18 A3: warga lain melihat jenis warga, admin melihat nama asli di Kelola Jelajah', function () {
+  const e = jelajahEnv();
+  const tb = login(e, 'budi'), ta = login(e, 'admin1');
+  e.ctx.getJelajahSekitar(tb);
+  const rec = e.ctx.submitJelajahRecommendation({ sessionToken: tb, kategori: 'Restoran', jenis: 'Bakso', namaLokasi: 'Mie Ayam Gang', lat: -6.13, lng: 106.84 });
+  e.ctx.submitJelajahReview({ sessionToken: ta, recommendationId: rec.id, rating: 5, comment: 'Mantap' });
+  const viewSari = e.ctx.getJelajahSekitar(login(e, 'sari')).recommendations.find(function (x) { return x.id === rec.id; });
+  assert.strictEqual(viewSari.namaPengirim, 'Penghuni');
+  assert.strictEqual(viewSari.featuredCommentName, 'Pengurus Tower 2');
+  const detail = e.ctx.getJelajahRecommendationDetail ? e.ctx.getJelajahRecommendationDetail(login(e, 'sari'), rec.id) : null;
+  if (detail) assert.ok(detail.comments.every(function (c) { return c.nama !== 'Admin' && c.nama !== 'admin1'; }));
+  const adminView = e.ctx.getKelolaJelajah(ta).recommendations.find(function (x) { return x.id === rec.id; });
+  assert.strictEqual(adminView.namaPengirim, 'Budi', 'admin tetap melihat nama asli');
+});
+
+test('v18 A5: notifikasi tercatat di LogNotifikasi; admin tidak melihat notifikasi pribadi', function () {
+  const e = env({ warga: [['budi', '123456', 'Budi', '0812', 'Penyewa', '', '', 'user', 'true']], admins: [['admin1', '123456', 'Admin']] });
+  e.ctx.registerPushToken({ sessionToken: login(e, 'admin1'), token: TOKEN('adm'), platform: 'android' });
+  e.ctx.registerPushToken({ sessionToken: login(e, 'budi'), token: TOKEN('bud'), platform: 'android' });
+  e.ctx.queuePush_({ admins: true }, { title: 'Aspirasi baru masuk', body: 'Kategori: Kebersihan', page: 'admin', tag: 'aspirasi-x' });
+  e.ctx.queuePush_({ usernames: ['budi'] }, { title: 'Aspirasi Anda diperbarui', body: 'Selesai', page: 'riwayat' });
+  const logRows = e.sheets.LogNotifikasi.data;
+  assert.strictEqual(logRows.length, 3);
+  assert.strictEqual(logRows[1][1], 'admin'); assert.strictEqual(logRows[1][7], 1, 'terkirim ke 1 perangkat admin');
+  const sent = e.http.calls ? e.http.calls : null;
+  const adminLog = e.ctx.getNotificationLog(login(e, 'admin1'));
+  assert.strictEqual(adminLog.items.length, 1, 'admin hanya melihat notifikasi admin/semua');
+  assert.throws(function () { e.ctx.getNotificationLog(login(e, 'budi')); });
+});
+
+test('v18 A4: bulatan Aspirasi = aspirasi baru yang belum ditangani; hilang di semua admin begitu satu admin menindaklanjuti', function () {
+  const e = env({ admins: [['admin1', '123456', 'Admin Satu'], ['admin2', '123456', 'Admin Dua']] });
+  addSheet(e, 'Data Aspirasi', [['ID', 'Timestamp', 'Username', 'Kategori', 'Detail_Aspirasi', 'StatusAspirasi', 'Sudah_Ditindaklanjuti', 'DibacaAdmin']]);
+  const t1 = login(e, 'admin1'), t2 = login(e, 'admin2');
+  e.ctx.registerPushToken({ sessionToken: t2, token: TOKEN('adm2'), platform: 'android' });
+  assert.strictEqual(e.ctx.getNotificationSummary(t2).aspirasi, 0, 'kunjungan pertama menetapkan titik awal');
+  e.ctx.getNotificationSummary(t1);
+  e.advance(60 * 1000);
+  e.sheets['Data Aspirasi'].data.push(['a1', new Date(START + 61000), 'budi', 'Kebersihan', 'Sampah menumpuk', 'Baru', 'Belum', 'Belum Dibaca'],
+    ['a2', new Date(START + 61000), 'sari', 'Keamanan', 'Pintu rusak', 'Baru', 'Belum', 'Belum Dibaca']);
+  e.advance(31 * 1000);
+  assert.strictEqual(e.ctx.getNotificationSummary(t2).aspirasi, 2);
+  assert.strictEqual(e.ctx.getNotificationSummary(t1).aspirasi, 2);
+  // admin1 menindaklanjuti a1 -> langsung hilang di admin2 (cache dikosongkan untuk semua admin)
+  e.http.calls.length = 0;
+  assert.strictEqual(e.ctx.updateTindakLanjut({ sessionToken: t1, id: 'a1', status: 'Dibaca', catatan: 'Sedang dicek' }).success, true);
+  assert.strictEqual(e.ctx.getNotificationSummary(t2).aspirasi, 1, 'yang sudah ditangani admin lain tidak dihitung');
+  const sends = fcmSends(e).map(function (c) { return JSON.parse(c.params.payload).message; });
+  const handled = sends.find(function (m) { return m.notification.title === 'Aspirasi sudah ditangani'; });
+  assert.ok(handled, 'admin lain dikabari');
+  assert.strictEqual(handled.android.notification.tag, 'aspirasi-a1', 'mengganti notifikasi lama di HP admin lain');
+  const sendCall = fcmSends(e)[0];
+  assert.strictEqual(e.http.lockAtCall[e.http.calls.indexOf(sendCall)], 0, 'dikirim setelah kunci dilepas');
+  // mengubah catatan lagi tidak membuat aspirasi muncul sebagai "baru"
+  e.advance(31 * 1000);
+  e.ctx.updateTindakLanjut({ sessionToken: t1, id: 'a1', status: 'Diselesaikan', catatan: 'Beres' });
+  assert.strictEqual(e.ctx.getNotificationSummary(t2).aspirasi, 1);
+  // admin2 membuka halaman Aspirasi -> sudah dibaca, bulatan hilang
+  e.ctx.markNotificationSeen(t2, 'aspirasi');
+  assert.strictEqual(e.ctx.getNotificationSummary(t2).aspirasi, 0);
+  assert.strictEqual(e.ctx.getNotificationSummary(t1).aspirasi, 1, 'admin1 belum membuka halaman, a2 masih baru');
+});
+
+test('v18 A6: Log Pengelolaan memuat aksi baru dan kategori sistem hanya untuk Super Admin', function () {
+  const e = jelajahEnv();
+  const ta = login(e, 'admin1');
+  e.ctx.getJelajahSekitar(ta);
+  e.ctx.submitJelajahRecommendation({ sessionToken: ta, kategori: 'Restoran', jenis: 'Bakso', namaLokasi: 'Soto Pojok', lat: -6.13, lng: 106.84 });
+  const jl = e.ctx.getManagementLog(ta, 'jelajah');
+  assert.ok(jl.data.some(function (x) { return x.action === 'SUBMIT_JELAJAH_RECOMMENDATION'; }));
+  assert.strictEqual(e.ctx.getManagementLog(ta, 'akun').authorized, false);
+  assert.strictEqual(e.ctx.getManagementLog(ta, 'logSystem').authorized, false);
+});
+
+test('v18 A7: daftar admin di-cache, tetapi pencabutan admin lewat aplikasi berlaku seketika', function () {
+  const e = env({ admins: [['admin1', '123456', 'A']], warga: [['admin1', '123456', 'A', '', 'Penyewa', '', '', 'user', 'true']] });
+  const ta = login(e, 'admin1');
+  assert.strictEqual(e.ctx.isAdminUsername_('admin1'), true);
+  e.ctx.bumpSessionVersion_('admin1');
+  e.sheets.Admins.data.splice(1, 1);
+  assert.strictEqual(e.ctx.isAdminUsername_('admin1'), false, 'cache dikosongkan saat sesi admin dicabut');
+  assert.throws(function () { e.ctx.getNotificationSummary(ta); });
+});
+
+test('v18 A11: Super Admin tidak bisa "turun" jadi admin/warga, dan ID aspirasi diperbaiki otomatis', function () {
+  const e = env({ admins: [['boss', '654321', 'nyasar']], warga: [['boss', '654321', 'Boss', '', 'Penyewa', '', '', 'user', 'true']] });
+  e.props.SUPER_ADMIN_USERNAME = 'boss';
+  e.props.SUPER_ADMIN_PIN_HASH = e.ctx.makePinHash_('123456');
+  const ok = e.ctx.loginWithPin({ username: 'boss', pin: '123456' });
+  assert.strictEqual(ok.user.isSuperAdmin, true);
+  const wrong = e.ctx.loginWithPin({ username: 'boss', pin: '654321' });
+  assert.strictEqual(wrong.success, false, 'PIN baris Admins/WargaBaru tidak boleh membuat Super Admin masuk sebagai admin/warga');
+  assert.strictEqual(e.ctx.registerUser({ username: 'BOSS', pin: '111111', pinConfirm: '111111' }).success, false);
+  assert.strictEqual(e.ctx.addAdmin({ sessionToken: ok.user.sessionToken, username: 'boss', pin: '222222' }).success, false);
+  // ID kosong dan kembar diperbaiki pemicu harian
+  addSheet(e, 'Data Aspirasi', [['ID', 'Timestamp', 'Kategori'], ['X1', new Date(), 'A'], ['', new Date(), 'B'], ['X1', new Date(), 'C'], ['', '', '']]);
+  const fixed = e.ctx.repairAspirasiIds_();
+  deq(fixed, { kosong: 1, kembar: 1 });
+  const ids = e.sheets['Data Aspirasi'].data.slice(1, 4).map(function (r) { return r[0]; });
+  assert.strictEqual(new Set(ids).size, 3); assert.strictEqual(ids[0], 'X1');
+  assert.ok(/^A[0-9A-F]{9}$/.test(ids[1]));
+  assert.strictEqual(e.sheets['Data Aspirasi'].data[4][0], '', 'baris kosong dibiarkan');
 });
 
 console.log('\n' + passed + ' uji backend v12 lulus');

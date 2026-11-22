@@ -9,7 +9,15 @@ const vm = require('vm');
 function toSigned(buf) { return Array.from(buf).map(function (b) { return b > 127 ? b - 256 : b; }); }
 
 // Seperti Google Sheets: teks berawalan tanda petik disimpan tanpa tanda petiknya.
-function cell(v) { return typeof v === 'string' && v.charAt(0) === "'" ? v.slice(1) : v; }
+// v18 (A8): teks berawalan = + - @ TANPA tanda petik akan dijadikan rumus oleh Sheets.
+// Tiruan mencatatnya di FORMULA_HITS agar uji bisa memastikan tidak ada injeksi rumus.
+const FORMULA_HITS = [];
+function cell(v, sheetName) {
+  if (typeof v !== 'string') return v;
+  if (v.charAt(0) === "'") return v.slice(1);
+  if (/^[\u0000-\u0020]*[=+\-@]/.test(v)) FORMULA_HITS.push({ sheet: sheetName || '?', value: v });
+  return v;
+}
 function makeSheet(name, rows) {
   const data = rows ? rows.map(function (r) { return r.slice(); }) : [];
   const sheet = {
@@ -20,7 +28,7 @@ function makeSheet(name, rows) {
     maxRows: 1000, maxCols: 26,
     getMaxRows: function () { return Math.max(sheet.maxRows, data.length); },
     getMaxColumns: function () { return Math.max(sheet.maxCols, sheet.getLastColumn()); },
-    appendRow: function (row) { data.push(row.map(cell)); return sheet; },
+    appendRow: function (row) { data.push(row.map(function (v) { return cell(v, name); })); return sheet; },
     deleteRow: function (n) { data.splice(n - 1, 1); },
     setFrozenRows: function () {},
     hideSheet: function () { sheet.hidden = true; },
@@ -42,11 +50,11 @@ function makeSheet(name, rows) {
         setValues: function (values) {
           for (let r = 0; r < values.length; r++) {
             if (!data[row - 1 + r]) data[row - 1 + r] = [];
-            for (let c = 0; c < values[r].length; c++) data[row - 1 + r][col - 1 + c] = cell(values[r][c]);
+            for (let c = 0; c < values[r].length; c++) data[row - 1 + r][col - 1 + c] = cell(values[r][c], name);
           }
         },
         getValue: function () { const v = (data[row - 1] || [])[col - 1]; return v === undefined ? '' : v; },
-        setValue: function (v) { if (!data[row - 1]) data[row - 1] = []; data[row - 1][col - 1] = cell(v); },
+        setValue: function (v) { if (!data[row - 1]) data[row - 1] = []; data[row - 1][col - 1] = cell(v, name); },
         clearContent: function () { for (let r = 0; r < numRows; r++) for (let c = 0; c < numCols; c++) if (data[row - 1 + r]) data[row - 1 + r][col - 1 + c] = ''; return this; },
         setNumberFormat: function () { return this; },
         createTextFinder: function (text) {
@@ -97,7 +105,8 @@ function createContext(options) {
     CacheService: { getScriptCache: function () { return {
       get: function (k) { const e = cacheStore[k]; if (!e) return null; if (e.exp < now) { delete cacheStore[k]; return null; } return e.v; },
       put: function (k, v, ttl) { cacheStore[k] = { v: String(v), exp: now + (ttl || 600) * 1000 }; },
-      remove: function (k) { delete cacheStore[k]; }
+      remove: function (k) { delete cacheStore[k]; },
+      removeAll: function (keys) { (keys || []).forEach(function (k) { delete cacheStore[k]; }); }
     }; } },
     PropertiesService: { getScriptProperties: function () { return {
       getProperty: function (k) { return props[k] === undefined ? null : props[k]; },
@@ -179,4 +188,4 @@ function createContext(options) {
   };
 }
 
-module.exports = { createContext: createContext };
+module.exports = { createContext: createContext, FORMULA_HITS: FORMULA_HITS };

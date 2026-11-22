@@ -52,6 +52,9 @@ for m in re.finditer(r'^function (\w+)\(', src, re.M):
     n = m.group(1)
     if n.endswith('_') or n in BY_DESIGN: continue
     b = body(n)
+    # v18: pembungkus kunci tulis meneruskan ke <nama>Unlocked_; periksa isinya.
+    if (n + 'Unlocked_(') in b and 'withScriptLock_(' in b:
+        b = b + body(n + 'Unlocked_')
     if n in OTHER_GUARD:
         needle, why = OTHER_GUARD[n]
         ok(needle in b, f'{n} {why}')

@@ -636,16 +636,20 @@
         if (window.TT2Shell && typeof window.TT2Shell.onSignedOut === 'function') window.TT2Shell.onSignedOut(endingToken).then(endSession, endSession);
         else endSession();
       }
-      currentUser = null;
-      clearSession();
-      document.getElementById('mainScreen').style.display = 'none';
-      document.getElementById('profileScreen').style.display = 'none';
-      document.getElementById('loginScreen').style.display = 'block';
-      document.getElementById('loginUsername').value = '';
-      document.getElementById('loginPin').value = '';
-      document.getElementById('loginError').style.display = 'none';
-      showAuthTab('login');
+      returnToLoginScreen();
     }, 'Keluar');
+  }
+
+  function returnToLoginScreen() {
+    currentUser = null;
+    clearSession();
+    document.getElementById('mainScreen').style.display = 'none';
+    document.getElementById('profileScreen').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'block';
+    document.getElementById('loginUsername').value = '';
+    document.getElementById('loginPin').value = '';
+    document.getElementById('loginError').style.display = 'none';
+    showAuthTab('login');
   }
 
   // ===================================================================
@@ -748,6 +752,22 @@
       runServerWithLoader().markNotificationSeen(currentUser.sessionToken, 'resetPin');
     }
   }
+
+  // v18: segarkan bulatan notifikasi saat aplikasi dibuka lagi atau saat notifikasi
+  // masuk ketika aplikasi terbuka, agar tindakan admin lain cepat terlihat.
+  let lastBadgeRefreshAt = 0;
+  function refreshNotificationBadges(force) {
+    if (!currentUser) return;
+    const now = Date.now();
+    if (!force && now - lastBadgeRefreshAt < 20000) return;
+    lastBadgeRefreshAt = now;
+    if (currentUser.isAdmin || currentUser.isSuperAdmin) loadAdminNotificationBadges();
+    else loadResidentNotificationBadge();
+  }
+  window.refreshNotificationBadges = refreshNotificationBadges;
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') refreshNotificationBadges(false);
+  });
 
   function loadResidentNotificationBadge() {
     if (!currentUser || currentUser.isAdmin || currentUser.isSuperAdmin) return;
@@ -899,6 +919,7 @@
     else if (page === 'kelolaPengumuman') renderKelolaPengumuman();
     else if (page === 'faq') renderFaq();
     else if (page === 'kelolaFaq') renderKelolaFaq();
+    else if (page === 'riwayatNotifikasi') renderRiwayatNotifikasi();
   }
 
   // ===================================================================
@@ -931,8 +952,26 @@
     return escapeHtml(limitedName);
   }
 
+  // v18: versi yang tampil berasal dari rilis GitHub, bukan isian manual di server.
+  // APK/PWA: versi tertanam saat build (package.json). Web: versi rilis terbaru yang
+  // sudah ikut termuat di systemConfig. APP_VERSION hanya cadangan.
+  function getDisplayVersion() {
+    const cfg = window.TT2_CONFIG || {};
+    const built = String(cfg.buildVersion || '').trim();
+    if (/^\d+\.\d+\.\d+$/.test(built)) return { text: built, kind: isNativeShell() ? 'APK' : 'PWA' };
+    const latest = String((typeof systemConfig !== 'undefined' && systemConfig && systemConfig.ApkVersiTerbaru) || '').trim();
+    if (/^\d+\.\d+\.\d+$/.test(latest)) return { text: latest, kind: 'Web' };
+    return { text: String(appVersion || '0'), kind: 'Web' };
+  }
+
+  function isNativeShell() {
+    try { return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()); } catch (e) { return false; }
+  }
+
   function getCopyrightFooter() {
-    return '<div class="copyright-footer"><span>© 2026 Capt.Rea</span><span>v' + escapeHtml(appVersion || '0') + '</span></div>';
+    const v = getDisplayVersion();
+    return '<div class="copyright-footer"><span>© 2026 Capt.Rea</span><span class="version-pill" title="Versi ' + escapeAttr(v.kind) + '">' +
+      '<span class="version-pill-kind">' + escapeHtml(v.kind) + '</span>v' + escapeHtml(v.text) + '</span></div>';
   }
 
   function buildOptions(list) {
@@ -1169,6 +1208,7 @@
         }).join('');
       }
       if (canViewPendingWork) html += pendingWorkHTML(pending);
+      if (canViewPendingWork) html += '<button type="button" class="btn-secondary notif-history-link" onclick="navigateTo(\'riwayatNotifikasi\')">Riwayat notifikasi terkirim</button>';
       html += getCopyrightFooter();
       document.getElementById('pageContent').innerHTML = html;
     }
@@ -1188,6 +1228,53 @@
         .withFailureHandler(function () { paint(); })
         .getErrorLogSummary(currentUser.sessionToken, 30);
     }
+  }
+
+  // v18 (A5): riwayat notifikasi push yang terkirim (Admin & Super Admin).
+  let notifHistoryFilter = 'semua';
+  let notifHistoryData = null;
+  function renderRiwayatNotifikasi() {
+    if (!currentUser || !(currentUser.isAdmin || currentUser.isSuperAdmin)) { navigateTo('beranda'); return; }
+    const started = currentPage;
+    document.getElementById('pageContent').innerHTML = getTopBar('Riwayat Notifikasi') + '<div class="page-title">Riwayat Notifikasi</div><div class="spinner">Memuat...</div>';
+    runServerWithLoader()
+      .withSuccessHandler(function (result) {
+        if (currentPage !== started) return;
+        notifHistoryData = (result && result.items) || [];
+        paintRiwayatNotifikasi(result && result.isSuper);
+      })
+      .withFailureHandler(function (err) { if (currentPage === started) document.getElementById('pageContent').innerHTML = getTopBar('Riwayat Notifikasi') + '<div class="empty-state">Gagal memuat: ' + escapeHtml(err && err.message || err) + '</div>'; })
+      .getNotificationLog(currentUser.sessionToken);
+  }
+
+  function setNotifHistoryFilter(value) { notifHistoryFilter = value; paintRiwayatNotifikasi(!!currentUser.isSuperAdmin); }
+
+  function paintRiwayatNotifikasi(isSuper) {
+    const tabs = [['semua', 'Semua'], ['admin', 'Untuk admin'], ['semua-warga', 'Untuk warga']].concat(isSuper ? [['pribadi', 'Pribadi']] : []);
+    const items = (notifHistoryData || []).filter(function (it) {
+      if (notifHistoryFilter === 'semua') return true;
+      if (notifHistoryFilter === 'semua-warga') return it.jenis === 'semua';
+      return it.jenis === notifHistoryFilter;
+    });
+    let html = getTopBar('Riwayat Notifikasi') + '<div class="page-title">Riwayat Notifikasi</div>' +
+      '<p class="page-subtitle">Notifikasi yang dikirim aplikasi ke HP. 150 terbaru.</p>' +
+      '<div class="notif-history-tabs" role="tablist">' + tabs.map(function (t) {
+        return '<button type="button" role="tab" aria-selected="' + (notifHistoryFilter === t[0]) + '" class="' + (notifHistoryFilter === t[0] ? 'active' : '') + '" onclick="setNotifHistoryFilter(' + escapeAttr(JSON.stringify(t[0])) + ')">' + escapeHtml(t[1]) + '</button>';
+      }).join('') + '</div>';
+    if (!items.length) html += '<div class="empty-state">Belum ada notifikasi pada kelompok ini.</div>';
+    else html += '<ul class="notif-history-list">' + items.map(function (it) {
+      const delivery = it.catatan ? it.catatan
+        : it.perangkat ? (it.terkirim + ' dari ' + it.perangkat + ' perangkat' + (it.gagal ? ' · ' + it.gagal + ' gagal' : ''))
+        : 'Tidak ada perangkat penerima';
+      return '<li class="notif-history-item">' +
+        '<div class="notif-history-head"><strong>' + escapeHtml(it.judul || '(tanpa judul)') + '</strong><span>' + escapeHtml(it.waktu) + '</span></div>' +
+        (it.isi ? '<p>' + escapeHtml(it.isi) + '</p>' : '') +
+        '<div class="notif-history-meta"><span class="notif-target notif-target-' + escapeAttr(it.jenis) + '">' + escapeHtml(it.sasaran) + '</span>' +
+        '<span class="' + (it.gagal || (it.catatan && !it.perangkat) ? 'notif-delivery-warn' : '') + '">' + escapeHtml(delivery) + '</span></div>' +
+      '</li>';
+    }).join('') + '</ul>';
+    html += getCopyrightFooter();
+    document.getElementById('pageContent').innerHTML = html;
   }
 
   function markAllNotificationsOnPage() {
@@ -1353,7 +1440,7 @@
         const canEdit = faqEditableRoles.indexOf(it.peran) >= 0;
         const idArg = escapeAttr(JSON.stringify(it.id));
         return '<div class="faq-admin-item"><div class="faq-admin-text"><strong>' + escapeHtml(it.pertanyaan) + '</strong>' +
-          '<span class="faq-role faq-role-' + it.peran + '">' + FAQ_ROLE_LABEL[it.peran] + '</span></div>' +
+          '<span class="faq-role faq-role-' + escapeAttr(it.peran) + '">' + escapeHtml(FAQ_ROLE_LABEL[it.peran] || it.peran) + '</span></div>' +
           (canEdit ? '<div class="faq-admin-actions">' +
             '<button type="button" aria-label="Naikkan" ' + (index ? '' : 'disabled') + ' onclick="moveFaq(' + idArg + ',-1)">↑</button>' +
             '<button type="button" aria-label="Turunkan" ' + (index < items.length - 1 ? '' : 'disabled') + ' onclick="moveFaq(' + idArg + ',1)">↓</button>' +
@@ -1777,7 +1864,7 @@
         '<div class="jelajah-star-picker" id="jelajahRatingButtons" role="group" aria-label="Pilih rating 1 sampai 5"></div>' +
         '<label for="jelajahReviewComment">Komentar (opsional)</label><textarea id="jelajahReviewComment" maxlength="500" placeholder="Bagikan pengalaman Anda…">' + escapeHtml(own.comment || '') + '</textarea>' +
         '<button type="button" class="btn-primary" id="btnSaveJelajahReview" onclick="saveJelajahReview(' + idArg + ')">Simpan ulasan</button></div>' +
-        '<p class="jl-muted jl-sender">Direkomendasikan oleh ' + escapeHtml(item.namaPengirim || 'Warga') + (item.timestamp ? ' · ' + escapeHtml(item.timestamp) : '') + '</p>' +
+        '<p class="jl-muted jl-sender">Direkomendasikan oleh ' + escapeHtml(item.mine ? 'Anda' : (item.namaPengirim || 'Warga Tower 2')) + (item.timestamp ? ' · ' + escapeHtml(item.timestamp) : '') + '</p>' +
       '</div></section>';
     document.body.appendChild(overlay);
     renderJelajahRatingButtons();
@@ -2637,7 +2724,7 @@
     const events = agendaCalendarEvents.filter(function (event) { return event.date === dateKey; });
     const holidayNotes = (agendaCalendarHolidays || []).filter(function (item) { return item.date === dateKey; }).map(function (item) {
       const label = item.type === 'libur' ? 'Libur nasional: ' : (item.type === 'internasional' ? 'Peringatan internasional: ' : 'Peringatan nasional: ');
-      return '<div class="agenda-holiday-note is-' + item.type + '">' + label + escapeHtml(item.name) + '</div>';
+      return '<div class="agenda-holiday-note is-' + escapeAttr(item.type) + '">' + label + escapeHtml(item.name) + '</div>';
     }).join('');
     const dateLabel = new Intl.DateTimeFormat('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(dateKey + 'T12:00:00Z'));
     let cards = events.length ? events.map(function (event) {
@@ -3103,7 +3190,7 @@
           '<td>' + escapeHtml(row.timestamp) + '</td>' +
           '<td>' + escapeHtml(row.username) + '</td>' +
           '<td>' + escapeHtml(row.kategori) + '</td>' +
-          '<td style="color:' + color + ';font-weight:700;">' + row.skor + '</td>' +
+          '<td style="color:' + color + ';font-weight:700;">' + escapeHtml(row.skor) + '</td>' +
           '<td>' + escapeHtml(row.skorSkala5) + '</td>' +
           '<td>' + escapeHtml(row.komentar || '-') + '</td>' +
         '</tr>';
@@ -3758,7 +3845,12 @@
     const catatan = document.getElementById('catatan_' + id).value;
     runServerWithLoader()
       .withSuccessHandler(function (result) {
-        if (!result.success) { showAppNotice('Gagal update: ' + result.message); return; }
+        if (!result.success) {
+          showAppNotice('Gagal update: ' + result.message, 'error');
+          // v18 (A11): daftar di layar mungkin sudah usang; muat ulang dari server.
+          if (result.notFound) renderAdminDashboard();
+          return;
+        }
         delete fotoTindakLanjutState[id];
         // Updating an aspiration writes LastUpdatedAt. Mark this menu seen
         // after the write so the admin's own update is not shown as new data.
@@ -4330,12 +4422,34 @@
   let managementLogCategory = 'warga';
   function renderLogPengelolaan() {
     const categories = [['warga', 'Kelola Warga'], ['pin', 'Kelola PIN'], ['aspirasi', 'Kelola Aspirasi'], ['kepuasan', 'Kelola Kepuasan'], ['agenda', 'Kelola Agenda'], ['nomorPenting', 'Kelola Nomor Penting'], ['nomorDarurat', 'Kelola Nomor Darurat']];
-    categories.push(['faq', 'Kelola FAQ']);
-    if (currentUser.isSuperAdmin) categories.push(['admin', 'Kelola Admin'], ['aplikasi', 'Kelola Aplikasi'], ['logSystem', 'Kelola Log System']);
+    categories.push(['faq', 'Kelola FAQ'], ['jelajah', 'Kelola Jelajah']);
+    if (currentUser.isSuperAdmin) categories.push(['admin', 'Kelola Admin'], ['aplikasi', 'Kelola Aplikasi'], ['akun', 'Akun Warga'], ['logSystem', 'Keamanan & Sistem']);
     const tabs = categories.map(function (item) { return '<button type="button" class="status-tab ' + (managementLogCategory === item[0] ? 'active' : '') + '" onclick="loadManagementLogCategory(\'' + item[0] + '\')">' + item[1] + '</button>'; }).join('');
     document.getElementById('pageContent').innerHTML = getTopBar('Log Pengelolaan') + '<div class="page-title">Log Pengelolaan</div><div class="status-tabs management-log-tabs">' + tabs + '</div><div id="managementLogRows"><div class="spinner">Memuat log...</div></div>' + getCopyrightFooter();
     loadManagementLogCategory(managementLogCategory);
   }
+  // v18: label manusiawi untuk kode aksi di AuditLog.
+  const MANAGEMENT_ACTION_LABELS = {
+    UPDATE_WARGA: 'Ubah data warga', DELETE_WARGA: 'Hapus warga', ACTIVATE_ADMIN: 'Jadikan admin', DEACTIVATE_ADMIN: 'Cabut admin',
+    RESET_PIN: 'Reset PIN', REQUEST_RESET_PIN: 'Minta reset PIN', PROCESS_RESET_PIN: 'Proses reset PIN',
+    SUBMIT_ASPIRASI: 'Aspirasi masuk', UPDATE_TINDAK_LANJUT: 'Tindak lanjut aspirasi', UPDATE_KEPUASAN: 'Ubah kepuasan',
+    SUBMIT_AGENDA_PROPOSAL: 'Usulan agenda masuk', APPROVE_AGENDA_PROPOSAL: 'Setujui usulan agenda', REJECT_AGENDA_PROPOSAL: 'Tolak usulan agenda',
+    CREATE_TOWER_AGENDA: 'Buat agenda', UPDATE_TOWER_AGENDA: 'Ubah agenda', ARCHIVE_TOWER_AGENDA: 'Arsipkan agenda', RESTORE_TOWER_AGENDA: 'Pulihkan agenda',
+    UPDATE_NOMOR_PENTING: 'Ubah nomor penting', UPDATE_NOMOR_DARURAT: 'Ubah nomor darurat',
+    ADD_ADMIN: 'Tambah admin', REMOVE_ADMIN: 'Hapus admin', UPDATE_ADMIN_PROFILE: 'Ubah profil admin', UPDATE_SUPER_ADMIN_PROFILE: 'Ubah profil Super Admin',
+    UPDATE_THEME: 'Ubah warna tema', UPDATE_BANNERS: 'Ubah banner', UPDATE_APP_FEEDBACK: 'Tanggapi masukan', KIRIM_PENGUMUMAN: 'Kirim pengumuman', RILIS_APK: 'Rilis APK baru',
+    ADD_FAQ: 'Tambah FAQ', UPDATE_FAQ: 'Ubah FAQ', DELETE_FAQ: 'Hapus FAQ', MOVE_FAQ: 'Pindah urutan FAQ',
+    SUBMIT_JELAJAH_RECOMMENDATION: 'Rekomendasi Jelajah baru', UPDATE_JELAJAH_RECOMMENDATION: 'Ubah rekomendasi Jelajah', VERIFY_JELAJAH_RECOMMENDATION: 'Verifikasi rekomendasi',
+    HIDE_JELAJAH_RECOMMENDATION: 'Arsipkan rekomendasi', RESTORE_JELAJAH_RECOMMENDATION: 'Pulihkan rekomendasi', UPSERT_JELAJAH_REVIEW: 'Ulasan Jelajah',
+    MODERATE_JELAJAH_COMMENT: 'Moderasi komentar', REPORT_JELAJAH: 'Laporan info Jelajah', RESOLVE_JELAJAH_REPORT: 'Tangani laporan Jelajah',
+    ADD_JELAJAH_CATEGORY: 'Tambah kategori Jelajah', UPDATE_JELAJAH_CATEGORY: 'Ubah kategori Jelajah', ADD_JELAJAH_TYPE: 'Tambah jenis Jelajah', UPDATE_JELAJAH_TYPE: 'Ubah jenis Jelajah',
+    SET_TOWER_LOCATION: 'Atur titik Tower 2', FILL_JELAJAH_COORDINATES: 'Lengkapi titik lokasi',
+    REGISTER: 'Pendaftaran akun', CLEANUP_HAPUS_AKUN: 'Hapus otomatis (profil tak lengkap)', CLEANUP_UJI: 'Uji pembersihan akun',
+    DELETE_OWN_ACCOUNT: 'Warga menghapus akunnya', DELETE_OWN_ACCOUNT_FAILED: 'Gagal hapus akun (PIN salah)',
+    LOGIN_FAILED: 'Gagal masuk', MARK_ERROR_LOG_SEEN: 'Tandai log sistem dibaca', PANGGILAN_DITOLAK: 'Panggilan fungsi ditolak', LAPORAN_RILIS_DITOLAK: 'Laporan rilis ditolak', PERBAIKI_ID_ASPIRASI: 'Perbaikan ID aspirasi otomatis'
+  };
+  function managementActionLabel(code) { return MANAGEMENT_ACTION_LABELS[code] || String(code || ''); }
+
   function loadManagementLogCategory(category) {
     managementLogCategory = category;
     const box = document.getElementById('managementLogRows'); if (!box) { renderLogPengelolaan(); return; }
@@ -4343,7 +4457,7 @@
     box.innerHTML = '<div class="spinner">Memuat log...</div>';
     runServerWithLoader().withSuccessHandler(function (result) {
       if (!result.authorized || !result.data || !result.data.length) { box.innerHTML = '<div class="empty-state">Belum ada aktivitas pada kategori ini.</div>'; return; }
-      box.innerHTML = result.data.map(function (item) { return '<div class="card management-log-item"><div class="card-top"><div class="card-title">' + escapeHtml(item.action) + '</div><span class="badge badge-sudah">' + escapeHtml(item.timestamp) + '</span></div><div class="card-date">Pelaku: ' + escapeHtml(item.actor) + ' · Target: ' + escapeHtml(item.target) + '</div><div class="card-detail">' + escapeHtml(item.detail || '-') + '</div></div>'; }).join('');
+      box.innerHTML = result.data.map(function (item) { return '<div class="card management-log-item"><div class="card-top"><div class="card-title" title="' + escapeAttr(item.action) + '">' + escapeHtml(managementActionLabel(item.action)) + '</div><span class="badge badge-sudah">' + escapeHtml(item.timestamp) + '</span></div><div class="card-date">Pelaku: ' + escapeHtml(item.actor) + ' · Target: ' + escapeHtml(item.target) + '</div><div class="card-detail">' + escapeHtml(item.detail || '-') + '</div></div>'; }).join('');
     }).withFailureHandler(function (err) { box.innerHTML = '<div class="empty-state">Gagal memuat log: ' + escapeHtml(err.message || '') + '</div>'; }).getManagementLog(currentUser.sessionToken, category);
   }
 
@@ -4775,10 +4889,54 @@
         '<div class="field"><label>Nomor WhatsApp</label><input type="text" id="editWA" value="' + escapeAttr(currentUser.nomorWhatsApp || '') + '"></div>' +
       '</div>' + wismaHtml +
       '<button class="btn-primary" onclick="updateProfil()" style="margin-top:8px;">Simpan Perubahan</button>' +
+      (isResident ? deleteAccountCardHTML() : '') +
       getCopyrightFooter();
     document.getElementById('pageContent').innerHTML = html;
 
     if (isBAST) populateFloorUnit8O('edit', currentUser.lantai, currentUser.unit);
+  }
+
+  // v18: hapus akun mandiri (syarat Google Play).
+  function deleteAccountCardHTML() {
+    return '<div class="card danger-zone" id="deleteAccountCard">' +
+      '<div class="card-title">Hapus akun</div>' +
+      '<p class="danger-zone-text">Akun dan data pribadi Anda (nama, nomor WhatsApp, unit, PIN, simpanan, dan notifikasi) akan dihapus permanen. ' +
+      'Aspirasi, ulasan, dan rekomendasi yang pernah Anda kirim tetap ada sebagai catatan pengelolaan, tanpa nama Anda.</p>' +
+      '<div id="deleteAccountForm" hidden>' +
+        '<div class="field"><label for="deleteAccountPin">PIN Anda</label><input type="password" id="deleteAccountPin" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="current-password"></div>' +
+        '<div class="field"><label for="deleteAccountConfirm">Ketik <strong>HAPUS</strong> untuk mengonfirmasi</label><input type="text" id="deleteAccountConfirm" autocomplete="off" autocapitalize="characters"></div>' +
+        '<button type="button" class="btn-danger" onclick="submitDeleteAccount()">Hapus akun saya permanen</button>' +
+        '<button type="button" class="btn-secondary" onclick="toggleDeleteAccountForm(false)">Batal</button>' +
+      '</div>' +
+      '<button type="button" class="btn-danger-outline" id="btnShowDeleteAccount" onclick="toggleDeleteAccountForm(true)">Hapus akun saya…</button>' +
+    '</div>';
+  }
+
+  function toggleDeleteAccountForm(show) {
+    const form = document.getElementById('deleteAccountForm');
+    const opener = document.getElementById('btnShowDeleteAccount');
+    if (!form || !opener) return;
+    form.hidden = !show; opener.hidden = !!show;
+    if (show) document.getElementById('deleteAccountPin').focus();
+  }
+
+  function submitDeleteAccount() {
+    const pin = document.getElementById('deleteAccountPin').value.trim();
+    const konfirmasi = document.getElementById('deleteAccountConfirm').value.trim();
+    if (!/^\d{6}$/.test(pin)) { showAppNotice('Masukkan PIN 6 angka Anda.', 'error'); return; }
+    if (konfirmasi.toUpperCase() !== 'HAPUS') { showAppNotice('Ketik HAPUS untuk mengonfirmasi.', 'error'); return; }
+    showAppConfirm('Akun Anda akan dihapus permanen dan tidak bisa dikembalikan. Lanjutkan?', function () {
+      const endingToken = currentUser.sessionToken;
+      runServerWithLoader()
+        .withSuccessHandler(function (result) {
+          if (!result || !result.success) { showAppNotice((result && result.message) || 'Akun belum terhapus.', 'error'); return; }
+          const finish = function () { returnToLoginScreen(); showAppDialog(result.message, { title: 'Akun dihapus' }); };
+          if (window.TT2Shell && typeof window.TT2Shell.onSignedOut === 'function') window.TT2Shell.onSignedOut(endingToken).then(finish, finish);
+          else finish();
+        })
+        .withFailureHandler(function (err) { showAppNotice('Akun belum terhapus: ' + (err && err.message || err), 'error'); })
+        .deleteMyAccount({ sessionToken: endingToken, pin: pin, konfirmasi: konfirmasi });
+    }, 'Hapus permanen');
   }
 
   function updateProfil() {

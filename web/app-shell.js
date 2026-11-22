@@ -221,6 +221,8 @@
     P.addListener('pushNotificationReceived', function (notification) {
       var text = [notification && notification.title, notification && notification.body].filter(Boolean).join(' — ');
       if (text && typeof showAppNotice === 'function') showAppNotice(text, 'success');
+      // v18: notifikasi masuk = ada perubahan di server; segarkan bulatan notifikasi.
+      if (typeof window.refreshNotificationBadges === 'function') window.refreshNotificationBadges(true);
     });
     P.addListener('pushNotificationActionPerformed', function (action) {
       var data = action && action.notification && action.notification.data;

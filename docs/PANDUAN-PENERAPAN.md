@@ -255,6 +255,25 @@ Tidak ada perubahan tampilan bagi warga, kecuali pesan baru di Jelajah saat temp
 
 **Cadangan wajib (dari serah terima, butir A9).** Buka Apps Script → Setelan proyek → Properti skrip, lalu simpan nilai `PIN_HASH_PEPPER` di tempat aman (mis. pengelola kata sandi), bersama berkas `RAHASIA-…` APK. Bila nilai ini hilang, semua PIN warga tidak bisa diverifikasi lagi dan harus direset.
 
+## 10e. Pembaruan v18 (versi 1.5.0)
+
+**Untuk warga:** Profil Saya → **Hapus akun saya** (PIN + ketik HAPUS). Halaman web permintaan hapus akun:
+`https://ryuuzaki-min.github.io/Teras-Tower-2-WAP/hapus-akun.html`. Di Jelajah, warga lain kini melihat jenis warga
+(mis. "Penyewa"), bukan nama. Versi aplikasi di kaki halaman diambil dari rilis GitHub (APK/PWA dari build, web dari rilis terbaru);
+Script Property `APP_VERSION` tidak perlu diisi lagi.
+
+**Untuk admin:** bulatan Aspirasi hanya menghitung aspirasi baru yang belum ditangani, dan hilang di semua admin begitu satu
+admin menindaklanjuti (admin lain juga mendapat notifikasi "Aspirasi sudah ditangani" yang menggantikan notifikasi lama).
+Halaman Notifikasi → **Riwayat notifikasi terkirim** (sheet tersembunyi `LogNotifikasi`, 2.000 baris terbaru).
+Log Pengelolaan punya tab baru Kelola Jelajah, serta Akun Warga dan Keamanan & Sistem (khusus Super Admin), dengan nama aksi yang mudah dibaca.
+
+**Penguatan:** cache 60 detik untuk Admins/SystemConfig/RefData/AppInfo (perubahan lewat aplikasi langsung berlaku; ketikan
+langsung di Sheets paling lambat 60 detik). Username Super Admin tidak bisa lagi masuk sebagai admin/warga biasa, didaftarkan,
+atau dijadikan Admin. ID aspirasi baru selalu teks (`A` + 9 karakter), dan pemicu harian mengisi ID kosong serta mengganti ID kembar.
+Tindak lanjut aspirasi, ubah profil, ubah/hapus warga kini memakai kunci tulis. Arsip akun dan agenda tidak lagi bisa memunculkan rumus.
+
+**Langkah pasang:** salin keempat berkas `gas/`, Deploy → versi baru, unggah zip, rilis tag `v1.5.0`. Pemicu tidak perlu dibuat ulang.
+
 ## 11. Tahap berikutnya
 
 - Notifikasi push untuk versi iPhone/PWA (Web Push, iOS 16.4+).
