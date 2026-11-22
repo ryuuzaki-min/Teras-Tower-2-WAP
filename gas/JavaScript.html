@@ -2771,6 +2771,7 @@
       return '<article class="agenda-event-card' + (event.active ? '' : ' is-archived') + '"><div class="agenda-event-top"><h3>' + escapeHtml(event.title) + '</h3>' +
         (event.active ? '' : '<span class="badge">Diarsipkan</span>') + '</div>' +
         '<div class="agenda-event-time">🕒 ' + escapeHtml(agendaTimeRange(event)) + (event.location ? ' · 📍 ' + escapeHtml(event.location) : '') + '</div>' +
+        (event.repeatLabel ? '<div class="agenda-repeat-label">🔁 ' + escapeHtml(event.repeatLabel) + '</div>' : '') +
         (event.detail ? '<p>' + escapeHtml(event.detail) + '</p>' : '') +
       '</article>';
     }).join('') : '<div class="empty-state agenda-no-events">Belum ada agenda pada tanggal ini.</div>';
@@ -2791,7 +2792,11 @@
     overlay.onclick = function (event) { if (event.target === overlay) closeAgendaModal(); };
     overlay.innerHTML = '<section class="agenda-modal" role="dialog" aria-modal="true" aria-labelledby="agendaFormTitle"><header class="agenda-modal-header"><div><h2 id="agendaFormTitle">' + (existing ? 'Edit agenda' : 'Tambah agenda') + '</h2><p>Agenda aktif ditampilkan kepada warga.</p></div><button type="button" class="agenda-modal-close" onclick="closeAgendaModal()" aria-label="Tutup">×</button></header><div class="agenda-modal-content">' +
       '<div class="field"><label for="agendaTitle">Judul agenda</label><input type="text" id="agendaTitle" maxlength="120" value="' + escapeAttr(existing ? existing.title : '') + '" placeholder="Contoh: Pembersihan tandon air"></div>' +
-      '<div class="field"><label for="agendaDate">Tanggal</label><input type="date" id="agendaDate" value="' + escapeAttr(existing ? existing.date : (dateKey || '')) + '"></div>' +
+      '<div class="field"><label for="agendaDate">' + (existing && existing.repeat ? 'Tanggal pertama' : 'Tanggal') + '</label><input type="date" id="agendaDate" value="' + escapeAttr(existing ? (existing.seriesDate || existing.date) : (dateKey || '')) + '"></div>' +
+      '<div class="agenda-time-fields"><div class="field"><label for="agendaRepeat">Ulangi</label><select id="agendaRepeat" onchange="document.getElementById(\'agendaRepeatUntilField\').hidden = !this.value">' +
+        [['', 'Tidak diulang'], ['mingguan', 'Setiap minggu'], ['bulanan', 'Setiap bulan']].map(function (o) { return '<option value="' + o[0] + '"' + ((existing && existing.repeat || '') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') +
+      '</select></div><div class="field" id="agendaRepeatUntilField"' + (existing && existing.repeat ? '' : ' hidden') + '><label for="agendaRepeatUntil">Sampai tanggal</label><input type="date" id="agendaRepeatUntil" value="' + escapeAttr(existing && existing.repeatUntil || '') + '"></div></div>' +
+      (existing && existing.repeat ? '<p class="agenda-repeat-note">Perubahan berlaku untuk seluruh seri agenda berulang ini.</p>' : '') +
       '<div class="agenda-time-fields"><div class="field"><label for="agendaStart">Jam mulai (WIB)</label><input type="time" id="agendaStart" value="' + escapeAttr(existing ? existing.startTime : '') + '"></div><div class="field"><label for="agendaEnd">Jam selesai (opsional)</label><input type="time" id="agendaEnd" value="' + escapeAttr(existing ? existing.endTime : '') + '"></div></div>' +
       '<div class="field"><label for="agendaLocation">Lokasi (opsional)</label><input type="text" id="agendaLocation" maxlength="120" value="' + escapeAttr(existing ? existing.location : '') + '" placeholder="Contoh: Lobby Tower 2"></div>' +
       '<div class="field"><label for="agendaDetail">Rincian (opsional)</label><textarea id="agendaDetail" maxlength="1200" placeholder="Informasi tambahan untuk warga">' + escapeHtml(existing ? existing.detail : '') + '</textarea></div>' +
@@ -2846,8 +2851,10 @@
       id: String(id || ''), title: (document.getElementById('agendaTitle').value || '').trim(),
       date: document.getElementById('agendaDate').value, startTime: document.getElementById('agendaStart').value,
       endTime: document.getElementById('agendaEnd').value, location: (document.getElementById('agendaLocation').value || '').trim(),
-      detail: (document.getElementById('agendaDetail').value || '').trim(), sessionToken: currentUser.sessionToken
+      detail: (document.getElementById('agendaDetail').value || '').trim(), sessionToken: currentUser.sessionToken,
+      repeat: (document.getElementById('agendaRepeat') || {}).value || '', repeatUntil: (document.getElementById('agendaRepeatUntil') || {}).value || ''
     };
+    if (payload.repeat && !payload.repeatUntil) { showAppNotice('Isi tanggal akhir pengulangan.', 'error'); return; }
     if (!payload.title || !payload.date || !payload.startTime) { showAppNotice('Judul, tanggal, dan jam mulai wajib diisi.', 'error'); return; }
     const button = document.getElementById('agendaSaveButton');
     if (button) { button.disabled = true; button.textContent = 'Menyimpan…'; }
@@ -2935,7 +2942,7 @@
     const idArg = escapeAttr(JSON.stringify(String(item.id)));
     const status = item.active ? 'Aktif' : 'Diarsipkan';
     const range = agendaTimeRange(item);
-    return '<article class="agenda-management-card' + (item.active ? '' : ' is-archived') + '"><div class="agenda-management-card-top"><div><h3>' + escapeHtml(item.title) + '</h3><div class="agenda-event-time">' + escapeHtml(item.date) + ' · ' + escapeHtml(range) + ' WIB' + (item.location ? ' · ' + escapeHtml(item.location) : '') + '</div></div><span class="agenda-management-status ' + (item.active ? 'is-active' : 'is-archived') + '">' + status + '</span></div>' +
+    return '<article class="agenda-management-card' + (item.active ? '' : ' is-archived') + '"><div class="agenda-management-card-top"><div><h3>' + escapeHtml(item.title) + '</h3><div class="agenda-event-time">' + escapeHtml(item.date) + ' · ' + escapeHtml(range) + ' WIB' + (item.location ? ' · ' + escapeHtml(item.location) : '') + '</div>' + (item.repeatLabel ? '<div class="agenda-repeat-label">🔁 ' + escapeHtml(item.repeatLabel) + '</div>' : '') + '</div><span class="agenda-management-status ' + (item.active ? 'is-active' : 'is-archived') + '">' + status + '</span></div>' +
       (item.detail ? '<p>' + escapeHtml(item.detail) + '</p>' : '') +
       '<div class="agenda-management-actions"><button type="button" class="btn-small" onclick="openAgendaForm(' + idArg + ',\'\')">Edit</button><button type="button" class="btn-small" onclick="setAgendaActive(' + idArg + ',' + (!item.active) + ')">' + (item.active ? 'Arsipkan' : 'Pulihkan') + '</button></div></article>';
   }
@@ -3773,7 +3780,7 @@
   }
 
   function buildRiwayatHTML(list) {
-    const content = document.getElementById('pageContent'); window._userHistoryList = list || [];
+    const content = document.getElementById('pageContent'); window._userHistoryList = Array.isArray(list) ? list : [];
     content.innerHTML = getTopBar('Riwayat') + '<div class="page-title">Riwayat Aspirasi Saya</div><div class="status-tabs"><button type="button" class="status-tab active" data-user-tab="Dibaca" onclick="setUserHistoryTab(\'Dibaca\')">Dibaca</button><button type="button" class="status-tab" data-user-tab="Diselesaikan" onclick="setUserHistoryTab(\'Diselesaikan\')">Diselesaikan</button><button type="button" class="status-tab" data-user-tab="Ditolak" onclick="setUserHistoryTab(\'Ditolak\')">Ditolak</button></div><div id="userHistoryRows"></div>' + getCopyrightFooter(); renderUserHistoryRows();
   }
   function setUserHistoryTab(tab) { userHistoryTab = tab; document.querySelectorAll('[data-user-tab]').forEach(function (b) { b.classList.toggle('active', b.dataset.userTab === tab); }); renderUserHistoryRows(); }
@@ -4704,7 +4711,7 @@
       const capHtml = cap ? '<div class="health-capacity ' + (cap.level === 'kritis' ? 'is-critical' : cap.level === 'waspada' ? 'is-warning' : '') + '"><strong>Kapasitas Spreadsheet: ' + cap.percent + '%</strong>' +
         '<div class="health-capacity-bar"><i style="width:' + Math.min(100, cap.percent) + '%"></i></div>' +
         '<small>' + Number(cap.usedCells).toLocaleString('id-ID') + ' dari ' + Number(cap.limitCells).toLocaleString('id-ID') + ' sel · terbesar: ' + escapeHtml(cap.largest) + '. Peringatan otomatis muncul di 75% dan 90%.</small></div>' : '';
-      target.innerHTML = capHtml + '<div class="health-summary"><strong>' + data.ok + ' OK</strong><span>' + data.warnings + ' perlu diperiksa</span><small>Pemeriksaan: ' + escapeHtml(data.checkedAt) + '</small></div>' + data.checks.map(function (item) {
+      target.innerHTML = capHtml + '<div class="health-summary"><strong>' + data.ok + ' OK</strong><span>' + data.warnings + ' perlu diperiksa</span><small>Pemeriksaan: ' + escapeHtml(data.checkedAt) + '</small></div>' + (data.checks || []).map(function (item) {
         const status = item.status === 'ok' ? 'OK' : (item.status === 'missing' ? 'Hilang' : 'Kolom kurang');
         const details = item.missing && item.missing.length ? 'Kolom: ' + item.missing.map(escapeHtml).join(', ') : ((item.rows || 0) + ' baris data');
         return '<div class="health-row"><strong>' + escapeHtml(item.name) + '</strong><span class="health-status health-' + item.status + '">' + status + '</span><small>' + details + '</small></div>';
@@ -4756,7 +4763,7 @@
     REGISTER: 'Pendaftaran akun', CLEANUP_HAPUS_AKUN: 'Hapus otomatis (profil tak lengkap)', CLEANUP_UJI: 'Uji pembersihan akun',
     DELETE_OWN_ACCOUNT: 'Warga menghapus akunnya', DELETE_OWN_ACCOUNT_FAILED: 'Gagal hapus akun (PIN salah)',
     LOGIN_FAILED: 'Gagal masuk', MARK_ERROR_LOG_SEEN: 'Tandai log sistem dibaca', PANGGILAN_DITOLAK: 'Panggilan fungsi ditolak', LAPORAN_RILIS_DITOLAK: 'Laporan rilis ditolak', PERBAIKI_ID_ASPIRASI: 'Perbaikan ID aspirasi otomatis',
-    PUBLISH_ASPIRASI: 'Tampilkan aspirasi di papan', UNPUBLISH_ASPIRASI: 'Sembunyikan aspirasi dari papan', SUBMIT_APRESIASI: 'Apresiasi baru', DELETE_APRESIASI: 'Hapus apresiasi', RETENSI_DATA: 'Retensi data otomatis'
+    PUBLISH_ASPIRASI: 'Tampilkan aspirasi di papan', UNPUBLISH_ASPIRASI: 'Sembunyikan aspirasi dari papan', SUBMIT_APRESIASI: 'Apresiasi baru', DELETE_APRESIASI: 'Hapus apresiasi', RETENSI_DATA: 'Retensi data otomatis', PENGINGAT_AGENDA: 'Pengingat agenda H-1'
   };
   function managementActionLabel(code) { return MANAGEMENT_ACTION_LABELS[code] || String(code || ''); }
 

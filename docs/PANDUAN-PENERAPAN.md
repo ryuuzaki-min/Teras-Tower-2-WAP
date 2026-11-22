@@ -304,6 +304,28 @@ Data Aspirasi: `Publik, JudulPublik, LokasiPublik, CatatanPublik, PublikPada, Pu
 
 **Langkah pasang:** salin keempat berkas `gas/`, Deploy → versi baru, unggah zip, rilis tag `v1.6.0`. Pemicu tidak perlu dibuat ulang.
 
+## 10g. Pembaruan v20 (versi 1.7.0) — agenda berulang & pengingat H-1 (A12 tahap 2–3)
+
+**Agenda berulang (admin)**
+- Form agenda di Kelola Agenda punya pilihan **Ulangi**: Tidak diulang / Setiap minggu / Setiap bulan, plus **Sampai tanggal**
+  (wajib, setelah tanggal pertama, paling lama 1 tahun).
+- Agenda bulanan pada tanggal 29–31 **dilewati** di bulan yang tidak punya tanggal itu (mis. 31 Januari → 31 Maret, bukan 28 Februari).
+- Satu baris di sheet = satu seri. Mengubah, mengarsipkan, atau mengaktifkan kembali berlaku untuk **seluruh seri**.
+- Di kalender warga dan di Kelola Agenda, agenda berulang ditandai 🔁 "Setiap minggu s.d. …".
+- Kolom baru di sheet `AgendaTower2` (dibuat otomatis): `Ulang` (`mingguan`/`bulanan`/kosong) dan `UlangSampai` (yyyy-MM-dd).
+
+**Pengingat H-1 (semua warga dan admin)**
+- Setiap hari sekitar **17.00 WIB**, fungsi `kirimPengingatAgendaHarian` mengirim satu notifikasi berisi agenda aktif untuk besok
+  (termasuk kejadian dari seri berulang). Satu agenda: "Besok: <judul>"; lebih dari satu: "Besok ada N agenda Tower 2".
+- Tidak terkirim dua kali untuk tanggal yang sama (Script Property `AGENDA_REMINDER_LAST`). Hari tanpa agenda: tidak ada notifikasi.
+- Tercatat di Log Pengelolaan sebagai **Pengingat agenda H-1**.
+- Pemicunya dipasang **otomatis** oleh pemicu harian 02.00 WIB. Bila ingin langsung aktif hari ini, jalankan `aktifkanOtomatisasiTT2`
+  sekali dari editor (aman diulang; pemicu tidak digandakan).
+
+**FAQ:** 3 entri baru ditambahkan sekali ke sheet FAQ yang sudah ada (Script Property `FAQ_V20`), tanpa menimpa isi.
+
+**Langkah pasang:** salin keempat berkas `gas/`, Deploy → Kelola deployment → versi baru, unggah zip, rilis tag `v1.7.0`.
+
 ## 11. Tahap berikutnya
 
 - Notifikasi push untuk versi iPhone/PWA (Web Push, iOS 16.4+).

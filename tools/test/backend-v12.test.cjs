@@ -158,14 +158,16 @@ test('aktifkanOtomatisasiTT2: satu pemicu harian 02.00 WIB, aman dijalankan ulan
   const e = env();
   e.ctx.aktifkanOtomatisasiTT2();
   const msg = e.ctx.aktifkanOtomatisasiTT2();
-  assert.strictEqual(e.triggers.length, 1);
+  assert.strictEqual(e.triggers.length, 2, 'pembersihan harian + pengingat agenda (v20)');
   deq(e.triggers[0].spec, { handler: 'jalankanPembersihanAkunHarian', everyDays: 1, atHour: 2, tz: 'Asia/Jakarta' });
+  deq(e.triggers[1].spec, { handler: 'kirimPengingatAgendaHarian', everyDays: 1, atHour: 17, tz: 'Asia/Jakarta' });
+  assert.ok(/17\.00/.test(msg), msg);
   assert.ok(/tersambung ke proyek teras-tower-2-cd033/.test(msg), msg);
 });
 
 test('fungsi pemicu & pengaturan tidak bisa dipanggil lewat doPost', function () {
   const e = env();
-  ['jalankanPembersihanAkunHarian', 'aktifkanOtomatisasiTT2', 'flushPushQueue_', 'queuePush_'].forEach(function (fn) {
+  ['jalankanPembersihanAkunHarian', 'aktifkanOtomatisasiTT2', 'kirimPengingatAgendaHarian', 'flushPushQueue_', 'queuePush_'].forEach(function (fn) {
     const out = JSON.parse(e.ctx.doPost({ postData: { contents: JSON.stringify({ fn: fn, args: [] }) } }).getContent());
     assert.strictEqual(out.error, 'Fungsi tidak dikenal.', fn);
   });
@@ -561,7 +563,8 @@ test('v17: fungsi latar hanya dari pemicu terjadwal atau editor pemilik', functi
   assert.throws(function () { e.ctx.jalankanPembersihanAkunHarian(); }, /pemicu terjadwal atau pemilik/);
   assert.throws(function () { e.ctx.aktifkanOtomatisasiTT2(); }, /pemicu terjadwal atau pemilik/);
   assert.throws(function () { e.ctx.jalankanPembersihanAkunHarian({ triggerUid: 'tebak-tebakan' }); }, /pemicu terjadwal/, 'ID pemicu palsu ditolak');
-  assert.strictEqual(e.triggers.length, 1, 'pemicu tidak dibuat ulang oleh orang luar');
+  assert.throws(function () { e.ctx.kirimPengingatAgendaHarian(); }, /pemicu terjadwal atau pemilik/, 'pengingat agenda juga dijaga');
+  assert.strictEqual(e.triggers.length, 2, 'pemicu tidak dibuat ulang oleh orang luar');
   // pemicu terjadwal asli lolos
   const r = e.ctx.jalankanPembersihanAkunHarian({ triggerUid: trig.getUniqueId() });
   assert.ok(r && Array.isArray(r.deleted));
@@ -954,9 +957,121 @@ test('v19 FAQ: entri fitur baru ditambahkan sekali ke FAQ yang sudah ada tanpa m
   const rows = e.sheets.FAQ.data;
   assert.strictEqual(rows[1][4], 'Jawaban admin', 'isi lama tetap');
   assert.strictEqual(rows.filter(function (r) { return r[3] === 'Apa itu Dinding Apresiasi?'; }).length, 1, 'pertanyaan yang sudah ada tidak digandakan');
-  assert.strictEqual(rows.length, 3 + 7);
+  assert.strictEqual(rows.length, 3 + 7 + 3, '7 entri v19 (1 sudah ada) + 3 entri v20');
   e.ctx.ensureFaqSheet_();
-  assert.strictEqual(e.sheets.FAQ.data.length, 10, 'hanya sekali');
+  assert.strictEqual(e.sheets.FAQ.data.length, 13, 'hanya sekali');
+});
+
+test('v20 FAQ: instalasi yang sudah v19 hanya mendapat entri v20, lewat pemicu harian', function () {
+  const e = env({});
+  e.props.FAQ_SEEDED = '1'; e.props.FAQ_V19 = '1';
+  addSheet(e, 'FAQ', [['ID', 'Bagian', 'Peran', 'Pertanyaan', 'Jawaban', 'Urutan', 'UpdatedAt', 'UpdatedBy'],
+    ['FAQ-001', 'Umum', 'warga', 'Pertanyaan buatan admin', 'Jawaban admin', 10, new Date(), 'admin1']]);
+  const rep = e.ctx.jalankanPembersihanAkunHarian();
+  assert.strictEqual(rep.faqBaru, true);
+  const rows = e.sheets.FAQ.data;
+  assert.strictEqual(rows.length, 2 + 3);
+  assert.ok(rows.some(function (r) { return r[0] === 'FAQ-V20-01' && /17\.00/.test(r[4]); }));
+  assert.strictEqual(e.props.FAQ_V20, '1');
+  assert.ok(!e.ctx.jalankanPembersihanAkunHarian().faqBaru, 'tidak diulang');
+});
+
+test('v20 A12: kejadian agenda mingguan dan bulanan (tanggal 31 dilewati di bulan pendek)', function () {
+  const e = env({});
+  const occ = function (row, a, b) { return e.ctx.agendaOccurrences_(row, a, b).join(','); };
+  assert.strictEqual(occ({ Tanggal: '2026-12-01', Ulang: 'mingguan', UlangSampai: '2026-12-29' }, '2026-11-01', '2027-01-31'), '2026-12-01,2026-12-08,2026-12-15,2026-12-22,2026-12-29');
+  assert.strictEqual(occ({ Tanggal: '2027-01-31', Ulang: 'bulanan', UlangSampai: '2027-06-30' }, '2027-01-01', '2027-12-31'), '2027-01-31,2027-03-31,2027-05-31');
+  assert.strictEqual(occ({ Tanggal: '2026-12-01', Ulang: 'mingguan', UlangSampai: '2027-03-01' }, '2027-01-01', '2027-01-31'), '2027-01-05,2027-01-12,2027-01-19,2027-01-26', 'hanya di rentang yang diminta');
+  assert.strictEqual(occ({ Tanggal: '2026-12-01', Ulang: '', UlangSampai: '' }, '2026-12-01', '2026-12-31'), '2026-12-01', 'agenda biasa tetap satu');
+  assert.strictEqual(occ({ Tanggal: '2026-12-01', Ulang: 'tahunan', UlangSampai: '2027-12-01' }, '2026-12-01', '2027-12-31'), '2026-12-01', 'mode asing diabaikan');
+});
+
+test('v20 A12: simpan agenda berulang — validasi, kalender bulan berikutnya, kelola, ubah seri', function () {
+  const e = env({ warga: [['budi', '123456', 'Budi', '0812', 'Penyewa', '', '', 'user', 'true']], admins: [['admin1', '123456', 'A']] });
+  const ta = login(e, 'admin1'), tb = login(e, 'budi');
+  const base = { sessionToken: ta, date: '2026-12-02', startTime: '19:00', endTime: '20:00', title: 'Ronda malam', location: 'Pos satpam', detail: '' };
+  const save = function (extra) { return e.ctx.saveAgenda(Object.assign({}, base, extra)); };
+  assert.strictEqual(save({ repeat: 'mingguan' }).success, false, 'tanggal akhir wajib');
+  assert.strictEqual(save({ repeat: 'mingguan', repeatUntil: '2026-12-01' }).success, false, 'akhir sebelum mulai ditolak');
+  assert.strictEqual(save({ repeat: 'mingguan', repeatUntil: '2028-01-01' }).success, false, 'lebih dari 1 tahun ditolak');
+  assert.strictEqual(save({ repeat: 'harian', repeatUntil: '2026-12-31' }).success, false, 'mode asing ditolak');
+  const r = save({ repeat: 'mingguan', repeatUntil: '2027-01-27' });
+  assert.strictEqual(r.success, true, r.message);
+  const id = r.id || e.sheets.AgendaTower2.data[1][0];
+  const dec = e.ctx.getAgendaCalendar(tb, 2026, 12).events.filter(function (ev) { return ev.title === 'Ronda malam'; });
+  assert.strictEqual(dec.map(function (ev) { return ev.date; }).join(','), '2026-12-02,2026-12-09,2026-12-16,2026-12-23,2026-12-30');
+  assert.ok(dec.every(function (ev) { return ev.id === id && ev.seriesDate === '2026-12-02' && ev.repeat === 'mingguan'; }));
+  assert.ok(/^Setiap minggu s\.d\. /.test(dec[0].repeatLabel), dec[0].repeatLabel);
+  const jan = e.ctx.getAgendaCalendar(tb, 2027, 1).events.filter(function (ev) { return ev.title === 'Ronda malam'; });
+  assert.strictEqual(jan.map(function (ev) { return ev.date; }).join(','), '2027-01-06,2027-01-13,2027-01-20,2027-01-27', 'kejadian berlanjut ke bulan berikutnya');
+  assert.strictEqual(e.ctx.getAgendaCalendar(tb, 2027, 2).events.filter(function (ev) { return ev.title === 'Ronda malam'; }).length, 0, 'berhenti setelah tanggal akhir');
+  const mgmt = e.ctx.getAgendaManagementData(ta);
+  const item = mgmt.agenda.find(function (x) { return x.id === id; });
+  assert.ok(item, 'muncul di kelola agenda'); assert.strictEqual(item.repeat, 'mingguan'); assert.strictEqual(item.repeatUntil, '2027-01-27');
+  // ubah seri menjadi tidak berulang: cache Januari ikut dibersihkan
+  const r2 = save({ id: id, repeat: '', repeatUntil: '' });
+  assert.strictEqual(r2.success, true, r2.message);
+  assert.strictEqual(e.ctx.getAgendaCalendar(tb, 2027, 1).events.filter(function (ev) { return ev.title === 'Ronda malam'; }).length, 0, 'kejadian Januari hilang setelah seri diubah');
+  assert.strictEqual(e.ctx.getAgendaCalendar(tb, 2026, 12).events.filter(function (ev) { return ev.title === 'Ronda malam'; }).length, 1);
+});
+
+test('v20 A12: pengingat agenda H-1 — penjaga pemicu, satu/banyak agenda, seri berulang, tanpa duplikat', function () {
+  const e = env({ warga: [['budi', '123456', 'Budi', '0812', 'Penyewa', '', '', 'user', 'true']], admins: [['admin1', '123456', 'A']] });
+  const ta = login(e, 'admin1'), tb = login(e, 'budi');
+  e.ctx.registerPushToken({ sessionToken: tb, token: TOKEN('bud'), platform: 'android' });
+  e.ctx.registerPushToken({ sessionToken: ta, token: TOKEN('adm'), platform: 'android' });
+  // pemicu: dibuat sekali, tidak digandakan
+  assert.strictEqual(e.ctx.ensureAgendaReminderTrigger_(false), true);
+  assert.strictEqual(e.ctx.ensureAgendaReminderTrigger_(false), false);
+  const trig = e.ctx.ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'kirimPengingatAgendaHarian'; });
+  assert.strictEqual(trig.length, 1); assert.strictEqual(trig[0].spec.atHour, 17); assert.strictEqual(trig[0].spec.tz, 'Asia/Jakarta');
+  // panggilan dari luar (pengunjung web) ditolak
+  const e2 = createContext({ codePath: CODE, now: START, activeEmail: '', sheets: { SystemConfig: [['KEY', 'VALUE']], Admins: [['Username', 'PIN', 'Keterangan']], WargaBaru: [WARGA_HEADERS] } });
+  assert.throws(function () { e2.ctx.kirimPengingatAgendaHarian({ triggerUid: 'palsu' }); }, /pemicu terjadwal/);
+  // tidak ada agenda besok -> tidak mengirim apa pun
+  e.http.calls.length = 0;
+  assert.strictEqual(e.ctx.kirimPengingatAgendaHarian({ triggerUid: trig[0].getUniqueId() }).status, 'tidak ada agenda');
+  assert.strictEqual(fcmSends(e).length, 0);
+  // satu agenda besok (18 Nov 2026)
+  e.advance(DAY); // sekarang 18 Nov -> besok 19 Nov
+  assert.strictEqual(e.ctx.saveAgenda({ sessionToken: ta, date: '2026-11-19', startTime: '08:00', endTime: '', title: 'Fogging', location: 'Lantai 1-5', detail: '' }).success, true);
+  e.http.calls.length = 0;
+  let res = e.ctx.kirimPengingatAgendaHarian({ triggerUid: trig[0].getUniqueId() });
+  assert.strictEqual(res.status, 'terkirim', JSON.stringify(res));
+  let msgs = fcmSends(e).map(function (c) { return JSON.parse(c.params.payload).message; });
+  assert.strictEqual(msgs.map(function (m) { return m.token; }).sort().join(','), [TOKEN('adm'), TOKEN('bud')].sort().join(','), 'semua warga dan admin');
+  assert.strictEqual(msgs[0].notification.title, 'Besok: Fogging');
+  assert.ok(/Lantai 1-5/.test(msgs[0].notification.body), msgs[0].notification.body);
+  assert.strictEqual(msgs[0].android.notification.tag, 'agenda-besok-2026-11-19');
+  e.http.calls.length = 0;
+  assert.strictEqual(e.ctx.kirimPengingatAgendaHarian({ triggerUid: trig[0].getUniqueId() }).status, 'sudah dikirim');
+  assert.strictEqual(fcmSends(e).length, 0, 'dijalankan dua kali tidak menggandakan');
+  // banyak agenda, termasuk kejadian ke-2 dari seri mingguan (mulai 13 Nov)
+  e.advance(7 * DAY); // 25 Nov -> besok 26 Nov
+  e.sheets.AgendaTower2.data.push(['AG-LAMA', new Date(), 'admin1', '2026-11-12', '09:00', '', 'Senam pagi', 'Lapangan', '', 'Aktif']);
+  const hdr = e.sheets.AgendaTower2.data[0];
+  const lama = e.sheets.AgendaTower2.data[e.sheets.AgendaTower2.data.length - 1];
+  const setCol = function (name, v) { const i = hdr.indexOf(name); assert.ok(i >= 0, 'kolom ' + name); lama[i] = v; };
+  setCol('ID', 'AG-LAMA'); setCol('Tanggal', '2026-11-12'); setCol('JamMulai', '06:30'); setCol('Judul', 'Senam pagi'); setCol('Ulang', 'mingguan'); setCol('UlangSampai', '2026-12-31');
+  if (hdr.indexOf('StatusAgenda') >= 0) setCol('StatusAgenda', 'Aktif');
+  assert.strictEqual(e.ctx.saveAgenda({ sessionToken: ta, date: '2026-11-26', startTime: '19:30', endTime: '', title: 'Rapat warga', location: 'Aula', detail: '' }).success, true);
+  e.http.calls.length = 0;
+  res = e.ctx.kirimPengingatAgendaHarian({ triggerUid: trig[0].getUniqueId() });
+  assert.strictEqual(res.jumlah, 2, JSON.stringify(res));
+  msgs = fcmSends(e).map(function (c) { return JSON.parse(c.params.payload).message; });
+  assert.strictEqual(msgs[0].notification.title, 'Besok ada 2 agenda Tower 2');
+  assert.ok(/Senam pagi \(06:30\), Rapat warga \(19:30\)/.test(msgs[0].notification.body), msgs[0].notification.body);
+  // agenda nonaktif tidak diingatkan
+  assert.strictEqual(e.ctx.getSheetData_('AuditLog').filter(function (r) { return r.Action === 'PENGINGAT_AGENDA'; }).length, 2);
+});
+
+test('v20 A12: pemicu harian memasang pengingat bila belum ada', function () {
+  const e = env({});
+  const rep = e.ctx.jalankanPembersihanAkunHarian();
+  const trig = e.ctx.ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'kirimPengingatAgendaHarian'; });
+  assert.strictEqual(trig.length, 1, JSON.stringify(rep));
+  e.ctx.jalankanPembersihanAkunHarian();
+  assert.strictEqual(e.ctx.ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'kirimPengingatAgendaHarian'; }).length, 1, 'tidak digandakan');
 });
 
 test('v19 A8 menyeluruh: tidak ada teks yang menjadi rumus di semua uji di atas', function () {

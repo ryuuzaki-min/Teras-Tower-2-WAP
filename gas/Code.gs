@@ -1,5 +1,5 @@
 // ===================================================================
-// TERAS TOWER 2 - Backend Apps Script (v19 - PAPAN TINDAK LANJUT, DINDING APRESIASI, AGENDA TAHAP 1, RETENSI DATA, PRIVASI)
+// TERAS TOWER 2 - Backend Apps Script (v20 - AGENDA BERULANG & PENGINGAT H-1; v19 - PAPAN TINDAK LANJUT, DINDING APRESIASI, RETENSI DATA, PRIVASI)
 // ===================================================================
 
 // SUPER ADMIN CREDENTIALS
@@ -522,7 +522,7 @@ function getManagementLog(sessionToken, category) {
       'ADD_JELAJAH_TYPE', 'UPDATE_JELAJAH_TYPE', 'SET_TOWER_LOCATION', 'FILL_JELAJAH_COORDINATES', 'HIDE_JELAJAH_RECOMMENDATION', 'RESTORE_JELAJAH_RECOMMENDATION'],
     papan: ['PUBLISH_ASPIRASI', 'UNPUBLISH_ASPIRASI', 'SUBMIT_APRESIASI', 'DELETE_APRESIASI'],
     akun: ['REGISTER', 'CLEANUP_HAPUS_AKUN', 'CLEANUP_UJI', 'DELETE_OWN_ACCOUNT', 'DELETE_OWN_ACCOUNT_FAILED'],
-    logSystem: ['LOGIN_FAILED', 'MARK_ERROR_LOG_SEEN', 'PANGGILAN_DITOLAK', 'LAPORAN_RILIS_DITOLAK', 'PERBAIKI_ID_ASPIRASI', 'RETENSI_DATA']
+    logSystem: ['LOGIN_FAILED', 'MARK_ERROR_LOG_SEEN', 'PANGGILAN_DITOLAK', 'LAPORAN_RILIS_DITOLAK', 'PERBAIKI_ID_ASPIRASI', 'RETENSI_DATA', 'PENGINGAT_AGENDA']
   };
   // Kategori yang hanya untuk Super Admin (berisi aktivitas pihak lain/sistem).
   const superOnly = { admin: true, aplikasi: true, akun: true, logSystem: true };
@@ -3601,7 +3601,7 @@ function getHolidaysForMonth_(year, month) {
 }
 
 function getAgendaSheet_() {
-  const headers = ['ID', 'Tanggal', 'JamMulai', 'JamSelesai', 'Judul', 'Lokasi', 'Detail', 'StatusAgenda', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy'];
+  const headers = ['ID', 'Tanggal', 'JamMulai', 'JamSelesai', 'Judul', 'Lokasi', 'Detail', 'StatusAgenda', 'CreatedAt', 'CreatedBy', 'UpdatedAt', 'UpdatedBy', 'Ulang', 'UlangSampai'];
   return withScriptLock_(function () {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     let sheet = ss.getSheetByName(SHEET_AGENDA);
@@ -3679,6 +3679,69 @@ function invalidateAgendaCacheForDate_(dateValue) {
   cache.remove(agendaMonthCacheKey_(year, month, true));
 }
 
+// ===================================================================
+// v20 (A12 tahap 3) — AGENDA BERULANG
+// Ulang: '' | 'mingguan' | 'bulanan'. UlangSampai: yyyy-MM-dd (paling lama 1 tahun
+// setelah tanggal pertama). Satu baris = satu seri; kalender menampilkan tiap kejadian.
+// Bulanan memakai tanggal yang sama; bulan yang tidak punya tanggal itu dilewati.
+// ===================================================================
+const AGENDA_REPEAT_MODES = ['mingguan', 'bulanan'];
+const AGENDA_REPEAT_MAX_DAYS = 366;
+
+function agendaKeyToUtc_(key) { const p = key.split('-').map(Number); return Date.UTC(p[0], p[1] - 1, p[2]); }
+function agendaUtcToKey_(ms) { return new Date(ms).toISOString().slice(0, 10); }
+
+function agendaRepeatOf_(row) {
+  const mode = String(row.Ulang || '').trim().toLowerCase();
+  const until = agendaDateKey_(row.UlangSampai);
+  if (AGENDA_REPEAT_MODES.indexOf(mode) < 0 || !until) return null;
+  return { mode: mode, until: until };
+}
+
+// Semua tanggal kejadian satu baris agenda di antara fromKey..toKey (inklusif).
+function agendaOccurrences_(row, fromKey, toKey) {
+  const start = agendaDateKey_(row.Tanggal);
+  if (!start) return [];
+  const repeat = agendaRepeatOf_(row);
+  if (!repeat) return (start >= fromKey && start <= toKey) ? [start] : [];
+  const end = repeat.until < toKey ? repeat.until : toKey;
+  const out = [];
+  if (repeat.mode === 'mingguan') {
+    for (let t = agendaKeyToUtc_(start), i = 0; i < 60; i++, t += 7 * 86400000) {
+      const key = agendaUtcToKey_(t);
+      if (key > end) break;
+      if (key >= fromKey) out.push(key);
+    }
+  } else {
+    const p = start.split('-').map(Number);
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(Date.UTC(p[0], p[1] - 1 + i, p[2]));
+      if (d.getUTCDate() !== p[2]) continue; // mis. tanggal 31 di bulan 30 hari
+      const key = agendaUtcToKey_(d.getTime());
+      if (key > end) break;
+      if (key >= fromKey) out.push(key);
+    }
+  }
+  return out;
+}
+
+function agendaRepeatLabel_(repeat) {
+  if (!repeat) return '';
+  return (repeat.mode === 'mingguan' ? 'Setiap minggu' : 'Setiap bulan') + ' s.d. ' + formatAgendaDateForPush_(repeat.until, '');
+}
+
+function invalidateAgendaCacheRange_(fromKey, toKey) {
+  if (!fromKey) return;
+  const end = toKey && toKey > fromKey ? toKey : fromKey;
+  let p = fromKey.split('-').map(Number);
+  const q = end.split('-').map(Number);
+  for (let i = 0; i < 15; i++) {
+    invalidateAgendaCacheForDate_(p[0] + '-' + ('0' + p[1]).slice(-2) + '-01');
+    if (p[0] > q[0] || (p[0] === q[0] && p[1] >= q[1])) break;
+    p = p[1] === 12 ? [p[0] + 1, 1] : [p[0], p[1] + 1];
+  }
+}
+
 function getAgendaCalendar(sessionToken, yearValue, monthValue) {
   const session = requireSession_(sessionToken, ['resident', 'admin', 'super_admin']);
   const agendaSheet = getSheet_(SHEET_AGENDA);
@@ -3701,16 +3764,22 @@ function getAgendaCalendar(sessionToken, yearValue, monthValue) {
     try { const parsed = JSON.parse(cached); if (Array.isArray(parsed)) events = parsed; } catch (ignore) {}
   }
   if (!events) {
-    events = (agendaSheet ? getSheetData_(SHEET_AGENDA) : []).map(function (row) {
-      const date = agendaDateKey_(row.Tanggal);
-      const active = String(row.StatusAgenda || 'Aktif') !== 'Diarsipkan';
-      return {
-        id: String(row.ID || ''), date: date, startTime: agendaTimeKey_(row.JamMulai), endTime: agendaTimeKey_(row.JamSelesai),
-        title: String(row.Judul || ''), location: String(row.Lokasi || ''), detail: String(row.Detail || ''), active: active
-      };
-    }).filter(function (event) {
-      return event.id && event.date.indexOf(monthKey) === 0 && event.active;
-    }).sort(function (a, b) {
+    const monthStart = monthKey + '-01';
+    const monthEnd = agendaUtcToKey_(Date.UTC(year, month, 0));
+    events = [];
+    (agendaSheet ? getSheetData_(SHEET_AGENDA) : []).forEach(function (row) {
+      if (!row.ID || String(row.StatusAgenda || 'Aktif') === 'Diarsipkan') return;
+      const repeat = agendaRepeatOf_(row);
+      const seriesDate = agendaDateKey_(row.Tanggal);
+      agendaOccurrences_(row, monthStart, monthEnd).forEach(function (date) {
+        events.push({
+          id: String(row.ID), date: date, seriesDate: seriesDate, startTime: agendaTimeKey_(row.JamMulai), endTime: agendaTimeKey_(row.JamSelesai),
+          title: String(row.Judul || ''), location: String(row.Lokasi || ''), detail: String(row.Detail || ''), active: true,
+          repeat: repeat ? repeat.mode : '', repeatUntil: repeat ? repeat.until : '', repeatLabel: agendaRepeatLabel_(repeat)
+        });
+      });
+    });
+    events.sort(function (a, b) {
       return a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime) || a.title.localeCompare(b.title);
     });
     try { cache.put(cacheKey, JSON.stringify(events), 60); } catch (ignore) {}
@@ -3739,6 +3808,15 @@ function saveAgenda(payload) {
   if (endTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(endTime)) return { success: false, message: 'Jam selesai tidak valid.' };
   if (endTime && endTime <= startTime) return { success: false, message: 'Jam selesai harus setelah jam mulai pada tanggal yang sama.' };
   if (location.length > 120 || detail.length > 1200) return { success: false, message: 'Lokasi atau rincian agenda melebihi batas karakter.' };
+  // v20: agenda berulang
+  const repeatMode = String(payload.repeat || '').trim().toLowerCase();
+  const repeatUntil = String(payload.repeatUntil || '').trim();
+  if (repeatMode && AGENDA_REPEAT_MODES.indexOf(repeatMode) < 0) return { success: false, message: 'Pilihan pengulangan tidak valid.' };
+  if (repeatMode) {
+    if (!isValidAgendaDate_(repeatUntil)) return { success: false, message: 'Isi tanggal akhir pengulangan.' };
+    if (repeatUntil <= date) return { success: false, message: 'Tanggal akhir pengulangan harus setelah tanggal agenda.' };
+    if (agendaKeyToUtc_(repeatUntil) - agendaKeyToUtc_(date) > AGENDA_REPEAT_MAX_DAYS * 86400000) return { success: false, message: 'Pengulangan paling lama 1 tahun. Buat seri baru setelahnya.' };
+  }
   const sheet = getAgendaSheet_();
   return withScriptLock_(function () {
     const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
@@ -3758,16 +3836,21 @@ function saveAgenda(payload) {
       Judul: sheetText_(title), Lokasi: sheetText_(location), Detail: sheetText_(detail),
       StatusAgenda: sheetText_(String(existing.StatusAgenda || 'Aktif')),
       CreatedAt: existing.CreatedAt || now, CreatedBy: sheetTextKeep_(existing.CreatedBy) || sheetText_(session.username),
-      UpdatedAt: now, UpdatedBy: sheetText_(session.username)
+      UpdatedAt: now, UpdatedBy: sheetText_(session.username),
+      Ulang: repeatMode, UlangSampai: repeatMode ? sheetText_(repeatUntil) : ''
     };
     const row = headers.map(function (header) {
       return Object.prototype.hasOwnProperty.call(rowData, header) ? rowData[header] : (existing[header] === undefined ? '' : sheetTextKeep_(existing[header]));
     });
+    ['UlangSampai'].forEach(function (header) { const c = headers.indexOf(header); if (c >= 0) row[c] = repeatMode ? sheetText_(repeatUntil) : ''; });
     writeAgendaRow_(sheet, headers, row, index >= 0 ? index + 2 : null);
-    if (index >= 0) invalidateAgendaCacheForDate_(existing.Tanggal);
-    invalidateAgendaCacheForDate_(date);
-    writeAuditLog_(id ? 'UPDATE_TOWER_AGENDA' : 'CREATE_TOWER_AGENDA', session.username, eventId, title);
-    if (!id) queuePush_({ all: true }, { title: 'Agenda baru Tower 2', body: title + ' — ' + formatAgendaDateForPush_(date, startTime), page: 'kalenderKerja' });
+    if (index >= 0) {
+      const oldRepeat = agendaRepeatOf_(existing);
+      invalidateAgendaCacheRange_(agendaDateKey_(existing.Tanggal), oldRepeat ? oldRepeat.until : '');
+    }
+    invalidateAgendaCacheRange_(date, repeatMode ? repeatUntil : '');
+    writeAuditLog_(id ? 'UPDATE_TOWER_AGENDA' : 'CREATE_TOWER_AGENDA', session.username, eventId, title + (repeatMode ? ' (' + repeatMode + ' s.d. ' + repeatUntil + ')' : ''));
+    if (!id) queuePush_({ all: true }, { title: 'Agenda baru Tower 2', body: title + ' — ' + formatAgendaDateForPush_(date, startTime) + (repeatMode ? ' · ' + agendaRepeatLabel_({ mode: repeatMode, until: repeatUntil }).toLowerCase() : ''), page: 'kalenderKerja' });
     return { success: true, id: eventId, message: id ? 'Agenda berhasil diperbarui.' : 'Agenda berhasil ditambahkan.' };
   });
 }
@@ -3794,7 +3877,9 @@ function setAgendaActive(payload) {
     sheet.getRange(rowNumber, statusCol).setValue(active ? 'Aktif' : 'Diarsipkan');
     sheet.getRange(rowNumber, updatedAtCol).setValue(new Date());
     sheet.getRange(rowNumber, updatedByCol).setValue(sheetText_(session.username));
-    invalidateAgendaCacheForDate_(targetDate);
+    const rowObj = {}; headers.forEach(function (h, c) { rowObj[h] = values[rowNumber - 1][c]; });
+    const repeatInfo = agendaRepeatOf_(rowObj);
+    invalidateAgendaCacheRange_(agendaDateKey_(targetDate), repeatInfo ? repeatInfo.until : '');
     writeAuditLog_(active ? 'RESTORE_TOWER_AGENDA' : 'ARCHIVE_TOWER_AGENDA', session.username, id, active ? 'Aktif' : 'Diarsipkan');
     return { success: true, message: active ? 'Agenda dipulihkan.' : 'Agenda diarsipkan; riwayat tetap tersimpan.' };
   });
@@ -3867,7 +3952,8 @@ function getAgendaManagementData(sessionToken) {
   const agenda = (agendaSheet ? getSheetData_(SHEET_AGENDA) : []).map(function (row) {
     return {
       id: String(row.ID || ''), date: agendaDateKey_(row.Tanggal), startTime: agendaTimeKey_(row.JamMulai), endTime: agendaTimeKey_(row.JamSelesai),
-      title: String(row.Judul || ''), location: String(row.Lokasi || ''), detail: String(row.Detail || ''), active: String(row.StatusAgenda || 'Aktif') !== 'Diarsipkan'
+      title: String(row.Judul || ''), location: String(row.Lokasi || ''), detail: String(row.Detail || ''), active: String(row.StatusAgenda || 'Aktif') !== 'Diarsipkan',
+      repeat: (agendaRepeatOf_(row) || {}).mode || '', repeatUntil: (agendaRepeatOf_(row) || {}).until || '', repeatLabel: agendaRepeatLabel_(agendaRepeatOf_(row))
     };
   }).filter(function (item) { return !!item.id; }).sort(function (a, b) {
     return (a.active === b.active ? 0 : (a.active ? -1 : 1)) || a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime);
@@ -4275,9 +4361,11 @@ function jalankanPembersihanAkunHarian(e) {
     try { report.logNotifikasiDipangkas = withScriptLock_(pruneNotificationLog_); } catch (err) { writeApplicationError_('pruneNotificationLog_', err, 'sistem'); }
     try { report.idAspirasi = withScriptLock_(repairAspirasiIds_); } catch (err) { writeApplicationError_('repairAspirasiIds_', err, 'sistem'); }
     try { report.retensi = withScriptLock_(applyDataRetention_); } catch (err) { writeApplicationError_('applyDataRetention_', err, 'sistem'); }
+    // v20: pasang pemicu pengingat agenda bila belum ada (tanpa perlu dijalankan dari editor).
+    try { report.pemicuPengingat = ensureAgendaReminderTrigger_(false) ? 'dibuat' : 'ada'; } catch (err) { writeApplicationError_('ensureAgendaReminderTrigger_', err, 'sistem'); }
     try {
       const fp = PropertiesService.getScriptProperties();
-      if (fp.getProperty('FAQ_SEEDED') === '1' && fp.getProperty('FAQ_V19') !== '1') { withScriptLock_(ensureFaqSheet_); report.faqV19 = true; }
+      if (fp.getProperty('FAQ_SEEDED') === '1' && faqMigrationPending_(fp)) { withScriptLock_(ensureFaqSheet_); report.faqBaru = true; }
     } catch (err) { writeApplicationError_('ensureFaqSheet_', err, 'sistem'); }
     return report;
   } catch (err) {
@@ -4296,13 +4384,14 @@ function aktifkanOtomatisasiTT2(e) {
     if (trigger.getHandlerFunction() === handler) ScriptApp.deleteTrigger(trigger);
   });
   ScriptApp.newTrigger(handler).timeBased().everyDays(1).atHour(2).inTimezone('Asia/Jakarta').create();
+  ensureAgendaReminderTrigger_(true);
   const fcm = getFcmConfig_();
   let fcmStatus = 'belum diatur (Script Property FCM_SERVICE_ACCOUNT kosong)';
   if (fcm) {
     try { getFcmAccessToken_(true); fcmStatus = 'tersambung ke proyek ' + fcm.project_id; }
     catch (err) { fcmStatus = 'GAGAL: ' + err.message; }
   }
-  const message = 'Pemicu pembersihan harian aktif (sekitar 02.00 WIB), mode: ' + getCleanupMode_() + '. Notifikasi push: ' + fcmStatus + '.';
+  const message = 'Pemicu pembersihan harian aktif (sekitar 02.00 WIB), mode: ' + getCleanupMode_() + '. Pengingat agenda H-1 aktif (sekitar ' + AGENDA_REMINDER_HOUR + '.00 WIB). Notifikasi push: ' + fcmStatus + '.';
   console.log(message);
   return message;
 }
@@ -4854,6 +4943,17 @@ const FAQ_V19_ADDITIONS = [
   ['Akun & privasi', 'warga', 'Di mana kebijakan privasi aplikasi ini?', 'Ketuk tautan "Privasi" di bagian bawah setiap halaman.']
 ];
 Array.prototype.push.apply(FAQ_DEFAULTS, FAQ_V19_ADDITIONS);
+// v20: agenda berulang dan pengingat H-1 (Script Property FAQ_V20=1).
+const FAQ_V20_ADDITIONS = [
+  ['Kalender Kerja', 'warga', 'Apakah saya diingatkan sebelum agenda?', 'Ya. Sekitar pukul 17.00 WIB, aplikasi mengirim notifikasi berisi agenda Tower 2 untuk besok. Pastikan notifikasi aplikasi diizinkan di HP Anda.'],
+  ['Kalender Kerja', 'warga', 'Apa arti tanda 🔁 di agenda?', 'Agenda itu berulang, misalnya setiap minggu atau setiap bulan, sampai tanggal yang tertulis di sampingnya.'],
+  ['Kalender Kerja', 'admin', 'Bagaimana membuat agenda berulang?', 'Di Kelola Agenda, buat agenda seperti biasa lalu pilih "Ulangi" setiap minggu atau setiap bulan dan isi tanggal akhirnya (paling lama 1 tahun). Agenda bulanan pada tanggal 29–31 dilewati di bulan yang tidak punya tanggal itu. Mengubah atau mengarsipkan agenda berulang berlaku untuk seluruh seri.']
+];
+Array.prototype.push.apply(FAQ_DEFAULTS, FAQ_V20_ADDITIONS);
+const FAQ_MIGRATIONS = [['FAQ_V19', 'V19', FAQ_V19_ADDITIONS], ['FAQ_V20', 'V20', FAQ_V20_ADDITIONS]];
+function faqMigrationPending_(props) {
+  return FAQ_MIGRATIONS.some(function (m) { return props.getProperty(m[0]) !== '1'; });
+}
 
 function faqRolesFor_(role) {
   if (role === 'super_admin') return ['warga', 'admin', 'super'];
@@ -4888,18 +4988,22 @@ function ensureFaqSheet_() {
     if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, FAQ_HEADERS.length).clearContent();
     if (rows.length) sheet.getRange(2, 1, rows.length, FAQ_HEADERS.length).setValues(rows);
     props.setProperty('FAQ_SEEDED', '1');
-    props.setProperty('FAQ_V19', '1');
-  } else if (props.getProperty('FAQ_V19') !== '1') {
+    FAQ_MIGRATIONS.forEach(function (m) { props.setProperty(m[0], '1'); });
+  } else if (faqMigrationPending_(props)) {
     const existing = sheet.getLastRow() > 1 ? sheet.getRange(2, 1, sheet.getLastRow() - 1, FAQ_HEADERS.length).getValues() : [];
     const questions = existing.map(function (r) { return String(r[3] || '').trim().toLowerCase(); });
     let order = existing.reduce(function (m, r) { return Math.max(m, Number(r[5]) || 0); }, 0);
     const now = new Date();
-    FAQ_V19_ADDITIONS.forEach(function (item, index) {
-      if (questions.indexOf(item[2].toLowerCase()) >= 0) return;
-      order += 10;
-      sheet.appendRow(['FAQ-V19-' + ('0' + (index + 1)).slice(-2), item[0], item[1], item[2], item[3], order, now, 'bawaan']);
+    FAQ_MIGRATIONS.forEach(function (m) {
+      if (props.getProperty(m[0]) === '1') return;
+      m[2].forEach(function (item, index) {
+        if (questions.indexOf(item[2].toLowerCase()) >= 0) return;
+        order += 10;
+        questions.push(item[2].toLowerCase());
+        sheet.appendRow(['FAQ-' + m[1] + '-' + ('0' + (index + 1)).slice(-2), sheetText_(item[0]), item[1], sheetText_(item[2]), sheetText_(item[3]), order, now, 'bawaan']);
+      });
+      props.setProperty(m[0], '1');
     });
-    props.setProperty('FAQ_V19', '1');
   }
   return sheet;
 }
@@ -5753,4 +5857,64 @@ function applyDataRetention_() {
   }
   if (Object.keys(report).some(function (k) { return report[k] > 0; })) writeAuditLog_('RETENSI_DATA', 'sistem', 'harian', JSON.stringify(report));
   return report;
+}
+
+
+// ===================================================================
+// v20 (A12 tahap 2) — PENGINGAT AGENDA H-1
+// Pemicu terpisah sekitar 17.00 WIB mengirim satu notifikasi ke semua warga berisi
+// agenda besok (termasuk kejadian agenda berulang). Dipasang otomatis oleh pemicu
+// harian; aktifkanOtomatisasiTT2 juga memasangnya ulang. Satu kali per tanggal.
+// ===================================================================
+const AGENDA_REMINDER_HANDLER = 'kirimPengingatAgendaHarian';
+const AGENDA_REMINDER_HOUR = 17;
+const PROP_AGENDA_REMINDER_LAST = 'AGENDA_REMINDER_LAST';
+
+function ensureAgendaReminderTrigger_(recreate) {
+  const existing = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === AGENDA_REMINDER_HANDLER; });
+  if (existing.length && !recreate) return false;
+  existing.forEach(function (t) { ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger(AGENDA_REMINDER_HANDLER).timeBased().everyDays(1).atHour(AGENDA_REMINDER_HOUR).inTimezone('Asia/Jakarta').create();
+  return true;
+}
+
+function agendaEventsOn_(dateKey) {
+  if (!getSheet_(SHEET_AGENDA)) return [];
+  return getSheetData_(SHEET_AGENDA).filter(function (row) {
+    return row.ID && String(row.StatusAgenda || 'Aktif') !== 'Diarsipkan' && agendaOccurrences_(row, dateKey, dateKey).length > 0;
+  }).map(function (row) {
+    return { title: String(row.Judul || ''), startTime: agendaTimeKey_(row.JamMulai), location: String(row.Lokasi || '') };
+  }).sort(function (a, b) { return a.startTime.localeCompare(b.startTime); });
+}
+
+function buildAgendaReminderMessage_(events, dateKey) {
+  if (!events.length) return null;
+  if (events.length === 1) {
+    const ev = events[0];
+    return { title: 'Besok: ' + ev.title, body: formatAgendaDateForPush_(dateKey, ev.startTime) + (ev.location ? ' · ' + ev.location : '') + '. Ketuk untuk melihat kalender.' };
+  }
+  const list = events.slice(0, 3).map(function (ev) { return ev.title + (ev.startTime ? ' (' + ev.startTime + ')' : ''); }).join(', ');
+  return { title: 'Besok ada ' + events.length + ' agenda Tower 2', body: list + (events.length > 3 ? ', dan lainnya' : '') + '.' };
+}
+
+function kirimPengingatAgendaHarian(e) {
+  requireTrustedBackgroundCall_(e, 'kirimPengingatAgendaHarian');
+  const props = PropertiesService.getScriptProperties();
+  const todayKey = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM-dd');
+  const tomorrowKey = agendaUtcToKey_(agendaKeyToUtc_(todayKey) + 86400000);
+  try {
+    return withScriptLock_(function () {
+      if (props.getProperty(PROP_AGENDA_REMINDER_LAST) === tomorrowKey) return { tanggal: tomorrowKey, status: 'sudah dikirim' };
+      const events = agendaEventsOn_(tomorrowKey);
+      props.setProperty(PROP_AGENDA_REMINDER_LAST, tomorrowKey);
+      const message = buildAgendaReminderMessage_(events, tomorrowKey);
+      if (!message) return { tanggal: tomorrowKey, status: 'tidak ada agenda' };
+      queuePush_({ all: true }, { title: message.title, body: message.body, page: 'kalenderKerja', tag: 'agenda-besok-' + tomorrowKey });
+      writeAuditLog_('PENGINGAT_AGENDA', 'sistem', tomorrowKey, events.length + ' agenda');
+      return { tanggal: tomorrowKey, status: 'terkirim', jumlah: events.length };
+    });
+  } catch (err) {
+    writeApplicationError_('kirimPengingatAgendaHarian', err, 'sistem');
+    return { tanggal: tomorrowKey, status: 'gagal: ' + err.message };
+  }
 }

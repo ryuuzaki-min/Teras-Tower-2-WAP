@@ -46,6 +46,7 @@ OTHER_GUARD = {
     'reportApkRelease': ('constantTimeEquals_(', 'dijaga RELEASE_SECRET'),
     'jalankanPembersihanAkunHarian': ('requireTrustedBackgroundCall_(', 'hanya pemicu terjadwal/editor pemilik'),
     'aktifkanOtomatisasiTT2': ('requireTrustedBackgroundCall_(', 'hanya pemicu terjadwal/editor pemilik'),
+    'kirimPengingatAgendaHarian': ('requireTrustedBackgroundCall_(', 'hanya pemicu terjadwal/editor pemilik'),
 }
 PENDING = set()
 for m in re.finditer(r'^function (\w+)\(', src, re.M):
@@ -72,7 +73,7 @@ MUST_PRIVATE = ['createSessionUser', 'verifySuperAdmin', 'getKepuasanData', 'set
     'requireTrustedBackgroundCall', 'findJelajahDuplicate', 'getNomorPentingData', 'getNomorDaruratData', 'takeGeocodeBudget']
 wl = re.search(r'const TT2_API_NAMES = \[([\s\S]*?)\];', src)
 wl = wl.group(1) if wl else ''
-for fn in ('jalankanPembersihanAkunHarian', 'aktifkanOtomatisasiTT2', 'include', 'doGet', 'doPost'):
+for fn in ('jalankanPembersihanAkunHarian', 'aktifkanOtomatisasiTT2', 'kirimPengingatAgendaHarian', 'include', 'doGet', 'doPost'):
     ok("'" + fn + "'" not in wl, f'{fn} tidak ada di daftar izin API (doPost)')
 for fn in MUST_PRIVATE:
     ok(not re.search(r'^function ' + fn + r'\(', src, re.M), f'{fn} tidak publik (harus berakhiran _)')
