@@ -258,7 +258,8 @@ Tidak ada perubahan tampilan bagi warga, kecuali pesan baru di Jelajah saat temp
 ## 10e. Pembaruan v18 (versi 1.5.0)
 
 **Untuk warga:** Profil Saya → **Hapus akun saya** (PIN + ketik HAPUS). Halaman web permintaan hapus akun:
-`https://ryuuzaki-min.github.io/Teras-Tower-2-WAP/hapus-akun.html`. Di Jelajah, warga lain kini melihat jenis warga
+`https://ryuuzaki-min.github.io/Teras-Tower-2-WAP/hapus-akun.html`; kebijakan privasi:
+`https://ryuuzaki-min.github.io/Teras-Tower-2-WAP/kebijakan-privasi.html`. Di Jelajah, warga lain kini melihat jenis warga
 (mis. "Penyewa"), bukan nama. Versi aplikasi di kaki halaman diambil dari rilis GitHub (APK/PWA dari build, web dari rilis terbaru);
 Script Property `APP_VERSION` tidak perlu diisi lagi.
 
@@ -273,6 +274,35 @@ atau dijadikan Admin. ID aspirasi baru selalu teks (`A` + 9 karakter), dan pemic
 Tindak lanjut aspirasi, ubah profil, ubah/hapus warga kini memakai kunci tulis. Arsip akun dan agenda tidak lagi bisa memunculkan rumus.
 
 **Langkah pasang:** salin keempat berkas `gas/`, Deploy → versi baru, unggah zip, rilis tag `v1.5.0`. Pemicu tidak perlu dibuat ulang.
+
+## 10f. Pembaruan v19 (versi 1.6.0)
+
+**Fitur baru untuk warga**
+- **Papan Tindak Lanjut** (Menu): perkembangan aspirasi fasilitas bersama, ringkasan bulan ini, tombol **Saya juga**. Pelapor bisa
+  **Sembunyikan dari papan** di Riwayat Saya.
+- **Dinding Apresiasi** (Menu), modul terpisah dari Aspirasi: langsung tampil, pengirim tampil sebagai jenis warga, maks. 5 per hari,
+  bisa dihapus penulis, Admin, dan Super Admin.
+- Tautan **Privasi** di kaki setiap halaman → `kebijakan-privasi.html` (GitHub Pages).
+
+**Untuk admin**
+- Kartu aspirasi di Kelola Aspirasi punya bagian **Papan Tindak Lanjut**: centang tampil, tulis judul/lokasi/catatan versi publik,
+  centang konfirmasi privasi. Server menolak judul/catatan berisi nomor telepon.
+- **Perlu Tindakan** kini langsung membuka dan menyorot aspirasi, permintaan reset PIN, atau usulan agenda yang dimaksud (A13).
+- **Agenda (A12 tahap 1):** admin dapat notifikasi usulan baru (juga di bulatan dan Perlu Tindakan); pengusul dikabari saat
+  disetujui atau ditolak (beserta catatan); usulan untuk tanggal yang sudah lewat ditolak.
+- Log Pengelolaan punya tab **Papan & Apresiasi**.
+
+**Privasi & data**
+- Hapus akun: nama di aspirasi menjadi inisial, nomor WA dan unit disandikan satu arah (`enc:…`, HMAC dengan kunci rahasia proyek;
+  nomor yang sama menghasilkan sandi yang sama, tetapi tidak bisa dibaca kembali).
+- **Retensi otomatis** (pemicu harian): AuditLog 1 tahun, ErrorLog 60 hari, ArsipAkunDihapus 1 tahun, apresiasi terhapus 90 hari,
+  username di Kepuasan 1 tahun, identitas pelapor aspirasi dianonimkan setelah 3 tahun.
+- FAQ: 8 entri baru ditambahkan **sekali** ke sheet FAQ yang sudah ada oleh pemicu harian (Script Property `FAQ_V19`), tanpa menimpa isi.
+
+**Sheet baru** (dibuat otomatis): `AspirasiDukungan` (tersembunyi), `Apresiasi`, `ApresiasiDukungan` (tersembunyi). Kolom baru di
+Data Aspirasi: `Publik, JudulPublik, LokasiPublik, CatatanPublik, PublikPada, PublikOleh, DibacaPada, SelesaiPada`.
+
+**Langkah pasang:** salin keempat berkas `gas/`, Deploy → versi baru, unggah zip, rilis tag `v1.6.0`. Pemicu tidak perlu dibuat ulang.
 
 ## 11. Tahap berikutnya
 

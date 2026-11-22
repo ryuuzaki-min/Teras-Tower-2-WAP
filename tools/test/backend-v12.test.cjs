@@ -632,7 +632,7 @@ function addSheet(e, name, rows) {
 }
 
 test('v18 A8 simulasi: isi berawalan = + - @ tidak pernah menjadi rumus di sheet mana pun', function () {
-  FORMULA_HITS.length = 0;
+  // (tidak dikosongkan: mencakup semua uji sebelumnya juga)
   const e = jelajahEnv({ config: [['PembersihanAkun', 'aktif']] });
   addSheet(e, 'RefData', [['Status_Wisma', 'Kategori'], ['Penyewa', 'Kebersihan'], ['Penghuni BAST', '']]);
   const evil = '=HYPERLINK("http://jahat.example","klik")';
@@ -691,7 +691,11 @@ test('v18: hapus akun mandiri menghapus data pribadi dan menganonimkan isi yang 
   assert.throws(function () { e.ctx.getJelajahSekitar(tb); }, /Sesi/, 'sesi lama tidak berlaku');
   assert.strictEqual(e.ctx.loginWithPin({ username: 'budi', pin: '123456' }).success, false, 'tidak bisa login lagi');
   const asp = e.sheets['Data Aspirasi'].data;
-  assert.deepStrictEqual(asp[1].slice(2, 10), ['', '', 'Warga (akun dihapus)', 'Penghuni', '03', '', '', 'Lampu mati'], 'aspirasi tetap, identitas hilang');
+  assert.deepStrictEqual(asp[1].slice(2, 7).concat(asp[1][9]), ['', '', 'Warga B. (akun dihapus)', 'Penghuni', '03', 'Lampu mati'], 'aspirasi tetap, nama jadi inisial');
+  assert.ok(/^enc:[0-9a-f]{16}$/.test(asp[1][8]), 'nomor WA tersandi: ' + asp[1][8]);
+  assert.ok(/^enc:[0-9a-f]{16}$/.test(asp[1][7]), 'unit tersandi');
+  assert.ok(String(asp[1][8]).indexOf('628120000') < 0 && asp[1][7] !== '0301');
+  assert.strictEqual(e.ctx.sealPersonalValue_('0812-3456-7890', 'wa'), e.ctx.sealPersonalValue_('6281234567890', 'wa'), 'nomor sama -> sandi sama');
   assert.strictEqual(asp[2][4], 'Sari', 'aspirasi warga lain tidak tersentuh');
   const recRow = e.sheets.JelajahRekomendasi.data.find(function (row) { return row[0] === rec.id; });
   assert.strictEqual(recRow[2], ''); assert.strictEqual(recRow[3], 'Warga (akun dihapus)');
@@ -700,6 +704,7 @@ test('v18: hapus akun mandiri menghapus data pribadi dan menganonimkan isi yang 
   const last = arsip[arsip.length - 1];
   assert.strictEqual(last[1], 'Dihapus sendiri oleh pemilik akun');
   assert.ok(last.indexOf('Budi') < 0 && last.indexOf('0812') < 0, 'arsip tidak menyimpan nama/WA');
+  assert.strictEqual(e.ctx.nameInitials_('budi santoso wijaya kusuma'), 'B.S.W.');
   // tempatnya tetap ada untuk warga lain, tanpa nama
   const list = e.ctx.getJelajahSekitar(login(e, 'sari')).recommendations;
   assert.strictEqual(list.find(function (x) { return x.id === rec.id; }).namaPengirim, 'Warga Tower 2');
@@ -807,6 +812,155 @@ test('v18 A11: Super Admin tidak bisa "turun" jadi admin/warga, dan ID aspirasi 
   assert.strictEqual(new Set(ids).size, 3); assert.strictEqual(ids[0], 'X1');
   assert.ok(/^A[0-9A-F]{9}$/.test(ids[1]));
   assert.strictEqual(e.sheets['Data Aspirasi'].data[4][0], '', 'baris kosong dibiarkan');
+});
+
+// ---------------- v19 ----------------
+function papanEnv() {
+  const e = jelajahEnv();
+  addSheet(e, 'Data Aspirasi', [['ID', 'Timestamp', 'Username', 'Nama', 'Unit', 'Nomor_WhatsApp', 'Kategori', 'Detail_Aspirasi', 'StatusAspirasi', 'Sudah_Ditindaklanjuti'],
+    ['A1', new Date(START - 2 * DAY), 'budi', 'Budi Santoso', '1207', '6281234567890', 'Lift', 'Lift B berhenti di lantai 12, anak saya takut', 'Baru', 'Belum'],
+    ['A2', new Date(START - DAY), 'sari', 'Sari', '0402', '6281300000000', 'Kebersihan', 'Sampah menumpuk', 'Baru', 'Belum']]);
+  return e;
+}
+
+test('v19 Papan: hanya aspirasi yang dipilih admin tampil, tanpa data pribadi; "Saya juga" dan sembunyikan oleh pelapor', function () {
+  const e = papanEnv();
+  const ta = login(e, 'admin1'), tb = login(e, 'budi'), ts = login(e, 'sari');
+  assert.strictEqual(e.ctx.getPapanTindakLanjut(ts).items.length, 0, 'belum ada yang dipublikasikan');
+  // validasi admin
+  assert.strictEqual(e.ctx.setAspirasiPublik({ sessionToken: ta, id: 'A1', publik: true, judul: 'Lift B sering berhenti', lokasi: 'Lift' }).success, false, 'wajib konfirmasi privasi');
+  assert.strictEqual(e.ctx.setAspirasiPublik({ sessionToken: ta, id: 'A1', publik: true, judul: 'Hubungi 081234567890', lokasi: 'Lift', konfirmasiPrivasi: true }).success, false, 'nomor telepon ditolak');
+  assert.throws(function () { e.ctx.setAspirasiPublik({ sessionToken: tb, id: 'A1', publik: true, judul: 'Lift B', konfirmasiPrivasi: true }); }, 'warga tidak bisa mempublikasikan');
+  e.http.calls.length = 0;
+  let r = e.ctx.setAspirasiPublik({ sessionToken: ta, id: 'A1', publik: true, judul: 'Lift B sering berhenti mendadak', lokasi: 'Lift', catatan: '', konfirmasiPrivasi: true });
+  assert.strictEqual(r.success, true, r.message);
+  const pushed = fcmSends(e).length + (e.sheets.LogNotifikasi ? e.sheets.LogNotifikasi.data.filter(function (x) { return x[3] === 'Aspirasi Anda tampil di Papan Tindak Lanjut'; }).length : 0);
+  assert.ok(pushed >= 1, 'pelapor dikabari');
+  const board = e.ctx.getPapanTindakLanjut(ts);
+  assert.strictEqual(board.items.length, 1);
+  const json = JSON.stringify(board);
+  ['Budi', '1207', '628123', 'anak saya', 'budi'].forEach(function (secret) { assert.ok(json.indexOf(secret) < 0, 'tidak boleh bocor: ' + secret); });
+  assert.strictEqual(board.items[0].statusLabel, 'Menunggu dibaca pengurus');
+  assert.strictEqual(board.stats.masuk >= 2, true);
+  // tindak lanjut -> linimasa
+  e.advance(2 * 3600 * 1000);
+  assert.strictEqual(e.ctx.updateTindakLanjut({ sessionToken: ta, id: 'A1', status: 'Dibaca', catatan: 'Dicek' }).success, true);
+  let detail = e.ctx.getPapanDetail(ts, 'A1').item;
+  assert.strictEqual(detail.step, 2); assert.ok(detail.timeline[1].waktu, 'waktu dibaca tercatat');
+  e.ctx.setAspirasiPublik({ sessionToken: ta, id: 'A1', publik: true, judul: 'Lift B sering berhenti mendadak', lokasi: 'Lift', catatan: 'Teknisi datang Rabu', konfirmasiPrivasi: true });
+  assert.strictEqual(e.ctx.getPapanDetail(ts, 'A1').item.step, 3);
+  assert.ok(e.ctx.getPapanTindakLanjut(ts).stats.rataTanggapJam > 0);
+  // Saya juga
+  assert.strictEqual(e.ctx.toggleAspirasiDukungan({ sessionToken: tb, id: 'A1' }).success, false, 'pelapor tidak mendukung miliknya');
+  r = e.ctx.toggleAspirasiDukungan({ sessionToken: ts, id: 'A1' });
+  assert.deepStrictEqual([r.didukung, r.dukungan], [true, 1]);
+  assert.strictEqual(e.ctx.getPapanTindakLanjut(ts).items[0].didukung, true);
+  r = e.ctx.toggleAspirasiDukungan({ sessionToken: ts, id: 'A1' });
+  assert.deepStrictEqual([r.didukung, r.dukungan], [false, 0]);
+  assert.strictEqual(e.ctx.toggleAspirasiDukungan({ sessionToken: ts, id: 'A2' }).success, false, 'yang tidak publik tidak bisa didukung');
+  // selesai
+  e.ctx.updateTindakLanjut({ sessionToken: ta, id: 'A1', status: 'Diselesaikan', catatan: 'Beres' });
+  detail = e.ctx.getPapanDetail(ts, 'A1').item;
+  assert.strictEqual(detail.step, 4); assert.strictEqual(detail.statusLabel, 'Selesai');
+  // pelapor menyembunyikan
+  assert.strictEqual(e.ctx.hideMyAspirasiFromPapan({ sessionToken: ts, id: 'A1' }).success, false, 'bukan pelapor');
+  assert.strictEqual(e.ctx.getRiwayatSaya('budi', tb)[0].tampilDiPapan, true);
+  assert.strictEqual(e.ctx.hideMyAspirasiFromPapan({ sessionToken: tb, id: 'A1' }).success, true);
+  assert.strictEqual(e.ctx.getPapanTindakLanjut(ts).items.length, 0);
+  assert.strictEqual(e.ctx.getPapanDetail(ts, 'A1').success, false);
+});
+
+test('v19 Apresiasi: langsung tampil, label jenis warga, hapus oleh penulis/admin saja, batas harian', function () {
+  const e = jelajahEnv();
+  const tb = login(e, 'budi'), ts = login(e, 'sari'), ta = login(e, 'admin1');
+  assert.strictEqual(e.ctx.submitApresiasi({ sessionToken: tb, untuk: 'Hacker', pesan: 'Terima kasih' }).success, false);
+  assert.strictEqual(e.ctx.submitApresiasi({ sessionToken: tb, untuk: 'Keamanan', pesan: 'Telp 081234567890 ya' }).success, false);
+  let r = e.ctx.submitApresiasi({ sessionToken: tb, untuk: 'Keamanan', untukDetail: 'Pak satpam malam', pesan: '=HYPERLINK("x") terima kasih sudah bantu bawa belanjaan' });
+  assert.strictEqual(r.success, true, r.message);
+  const id = r.id;
+  let list = e.ctx.getApresiasi(ts).items;
+  assert.strictEqual(list.length, 1);
+  assert.strictEqual(list[0].dari, 'Penghuni'); assert.strictEqual(list[0].bisaHapus, false);
+  assert.strictEqual(e.ctx.getApresiasi(tb).items[0].milikSaya, true);
+  assert.strictEqual(e.ctx.getApresiasi(ta).items[0].bisaHapus, true);
+  r = e.ctx.toggleApresiasiDukungan({ sessionToken: ts, id: id });
+  assert.deepStrictEqual([r.didukung, r.dukungan], [true, 1]);
+  assert.strictEqual(e.ctx.deleteApresiasi({ sessionToken: ts, id: id }).success, false, 'warga lain tidak bisa hapus');
+  assert.strictEqual(e.ctx.deleteApresiasi({ sessionToken: tb, id: id }).success, true, 'penulis bisa hapus');
+  assert.strictEqual(e.ctx.getApresiasi(ts).items.length, 0);
+  r = e.ctx.submitApresiasi({ sessionToken: ts, untuk: 'Kebersihan', pesan: 'Lorong selalu bersih' });
+  assert.strictEqual(e.ctx.deleteApresiasi({ sessionToken: ta, id: r.id }).success, true, 'admin bisa moderasi');
+  for (let i = 0; i < 4; i++) assert.strictEqual(e.ctx.submitApresiasi({ sessionToken: ts, untuk: 'Teknisi', pesan: 'Terima kasih ke-' + i }).success, true);
+  assert.strictEqual(e.ctx.submitApresiasi({ sessionToken: ts, untuk: 'Teknisi', pesan: 'Satu lagi ya' }).success, false, 'batas 5 per hari');
+  assert.strictEqual(e.ctx.getManagementLog(ta, 'papan').data.filter(function (x) { return x.action === 'DELETE_APRESIASI'; }).length, 1, 'admin biasa hanya melihat aksinya sendiri');
+});
+
+test('v19 A12: usulan agenda — tanggal lampau ditolak, admin dan pengusul dikabari, masuk bulatan dan Perlu Tindakan', function () {
+  const e = env({ warga: [['budi', '123456', 'Budi', '0812', 'Penyewa', '', '', 'user', 'true']], admins: [['admin1', '123456', 'A'], ['admin2', '123456', 'B']] });
+  const tb = login(e, 'budi'), t1 = login(e, 'admin1'), t2 = login(e, 'admin2');
+  ['adm1', 'adm2', 'bud'].forEach(function (k, i) { e.ctx.registerPushToken({ sessionToken: [t1, t2, tb][i], token: TOKEN(k), platform: 'android' }); });
+  e.ctx.getNotificationSummary(t2);
+  e.advance(60 * 1000);
+  assert.strictEqual(e.ctx.submitAgendaProposal({ sessionToken: tb, title: 'Kerja bakti', date: '2026-11-10', startTime: '08:00' }).success, false, 'tanggal lampau');
+  e.http.calls.length = 0;
+  const r = e.ctx.submitAgendaProposal({ sessionToken: tb, title: 'Kerja bakti lantai 12', date: '2026-11-29', startTime: '08:00', location: 'Lobi' });
+  assert.strictEqual(r.success, true, r.message);
+  let msgs = fcmSends(e).map(function (c) { return JSON.parse(c.params.payload).message; });
+  assert.strictEqual(msgs.filter(function (m) { return m.notification.title === 'Usulan agenda baru'; }).length, 2, 'dua admin dikabari');
+  e.advance(31 * 1000);
+  assert.strictEqual(e.ctx.getNotificationSummary(t2).agendaUsulan, 1);
+  const pending = e.ctx.getPendingWork(t2);
+  assert.strictEqual(pending.agendaUsulan.total, 1); assert.strictEqual(pending.agendaUsulan.items[0].judul, 'Kerja bakti lantai 12');
+  e.http.calls.length = 0;
+  assert.strictEqual(e.ctx.reviewAgendaProposal({ sessionToken: t1, id: r.id, decision: 'reject', note: 'Bentrok dengan fogging' }).success, true);
+  msgs = fcmSends(e).map(function (c) { return { m: JSON.parse(c.params.payload).message, token: JSON.parse(c.params.payload).message.token }; });
+  const toBudi = msgs.filter(function (x) { return x.token === TOKEN('bud'); }).map(function (x) { return x.m.notification; });
+  assert.strictEqual(toBudi.length, 1); assert.ok(/belum disetujui/.test(toBudi[0].title) && /fogging/.test(toBudi[0].body));
+  assert.ok(msgs.some(function (x) { return x.token === TOKEN('adm2') && x.m.android.notification.tag === 'agenda-usulan-' + r.id; }), 'notifikasi admin lain diganti');
+  assert.strictEqual(e.ctx.getNotificationSummary(t2).agendaUsulan, 0, 'hilang setelah diperiksa admin lain');
+});
+
+test('v19: penulisan baris warga dibatalkan bila baris bergeser', function () {
+  const e = env({ warga: [['budi', '123456', 'Budi', '0812', 'Penyewa', '', '', 'user', 'true'], ['sari', '123456', 'Sari', '0813', 'Penyewa', '', '', 'user', 'true']] });
+  const sheet = e.ctx.SpreadsheetApp.getActiveSpreadsheet().getSheetByName('WargaBaru');
+  assert.doesNotThrow(function () { e.ctx.assertRowOwner_(sheet, 2, 0, 'budi'); });
+  e.sheets.WargaBaru.data.splice(1, 1); // baris 2 kini milik sari
+  assert.throws(function () { e.ctx.assertRowOwner_(sheet, 2, 0, 'budi'); }, /Muat ulang/);
+});
+
+test('v19 retensi: log lama dipangkas, aspirasi >3 tahun dianonimkan, apresiasi terhapus dibuang', function () {
+  const e = papanEnv();
+  const old = new Date(START - 4 * 365 * DAY), recent = new Date(START - 10 * DAY);
+  e.sheets['Data Aspirasi'].data.push(['A9', old, 'lama', 'Lama Sekali', '0909', '6281111111111', 'Lift', 'Lama', 'Diselesaikan', 'Sudah']);
+  addSheet(e, 'AuditLog', [['Timestamp', 'Action', 'Actor', 'Target', 'Detail'], [new Date(START - 400 * DAY), 'X', 'a', '', ''], [recent, 'Y', 'a', '', '']]);
+  addSheet(e, 'Apresiasi', [['ID', 'CreatedAt', 'Username', 'Untuk', 'UntukDetail', 'Pesan', 'Status', 'DihapusOleh', 'DihapusPada'],
+    ['P1', old, 'budi', 'Teknisi', '', 'x', 'Dihapus', 'budi', new Date(START - 100 * DAY)], ['P2', recent, 'budi', 'Teknisi', '', 'y', 'Aktif', '', '']]);
+  const rep = e.ctx.applyDataRetention_();
+  assert.strictEqual(rep.auditLog, 1); assert.strictEqual(rep.apresiasiDihapus, 1); assert.strictEqual(rep.aspirasi, 1);
+  const row = e.sheets['Data Aspirasi'].data.find(function (r) { return r[0] === 'A9'; });
+  assert.strictEqual(row[3], 'Warga L.S. (diarsipkan)'); assert.strictEqual(row[2], '');
+  assert.ok(/^enc:/.test(row[4]) && /^enc:/.test(row[5]));
+  assert.strictEqual(e.sheets['Data Aspirasi'].data.find(function (r) { return r[0] === 'A1'; })[3], 'Budi Santoso', 'aspirasi baru tidak tersentuh');
+  assert.strictEqual(e.ctx.applyDataRetention_().aspirasi, 0, 'tidak diproses dua kali');
+});
+
+test('v19 FAQ: entri fitur baru ditambahkan sekali ke FAQ yang sudah ada tanpa menimpa isi', function () {
+  const e = env({});
+  e.props.FAQ_SEEDED = '1';
+  addSheet(e, 'FAQ', [['ID', 'Bagian', 'Peran', 'Pertanyaan', 'Jawaban', 'Urutan', 'UpdatedAt', 'UpdatedBy'],
+    ['FAQ-001', 'Umum', 'warga', 'Pertanyaan buatan admin', 'Jawaban admin', 10, new Date(), 'admin1'],
+    ['FAQ-002', 'Dinding Apresiasi', 'warga', 'Apa itu Dinding Apresiasi?', 'Versi admin sendiri', 20, new Date(), 'admin1']]);
+  e.ctx.ensureFaqSheet_();
+  const rows = e.sheets.FAQ.data;
+  assert.strictEqual(rows[1][4], 'Jawaban admin', 'isi lama tetap');
+  assert.strictEqual(rows.filter(function (r) { return r[3] === 'Apa itu Dinding Apresiasi?'; }).length, 1, 'pertanyaan yang sudah ada tidak digandakan');
+  assert.strictEqual(rows.length, 3 + 7);
+  e.ctx.ensureFaqSheet_();
+  assert.strictEqual(e.sheets.FAQ.data.length, 10, 'hanya sekali');
+});
+
+test('v19 A8 menyeluruh: tidak ada teks yang menjadi rumus di semua uji di atas', function () {
+  assert.deepStrictEqual(FORMULA_HITS.map(function (h) { return h.sheet + ': ' + h.value; }), []);
 });
 
 console.log('\n' + passed + ' uji backend v12 lulus');

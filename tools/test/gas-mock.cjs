@@ -30,6 +30,7 @@ function makeSheet(name, rows) {
     getMaxColumns: function () { return Math.max(sheet.maxCols, sheet.getLastColumn()); },
     appendRow: function (row) { data.push(row.map(function (v) { return cell(v, name); })); return sheet; },
     deleteRow: function (n) { data.splice(n - 1, 1); },
+    deleteRows: function (n, count) { data.splice(n - 1, count); },
     setFrozenRows: function () {},
     hideSheet: function () { sheet.hidden = true; },
     getDataRange: function () { return sheet.getRange(1, 1, Math.max(1, data.length), Math.max(1, sheet.getLastColumn())); },
@@ -124,9 +125,9 @@ function createContext(options) {
       computeHmacSha256Signature: function (text, key) { return toSigned(crypto.createHmac('sha256', String(key)).update(String(text), 'utf8').digest()); },
       formatDate: function (d, tz, pattern) {
         const iso = new RealDate(new RealDate(d).getTime() + 7 * 3600000).toISOString();
-        if (pattern === 'dd/MM/yyyy') return iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4);
-        if (pattern === 'yyyyMMddHHmmss') return iso.replace(/[-:T]/g, '').slice(0, 14);
-        return iso.slice(0, 10);
+        // Pola umum seperti Apps Script: yyyy MM dd HH mm ss (zona dianggap Asia/Jakarta).
+        const parts = { yyyy: iso.slice(0, 4), MM: iso.slice(5, 7), dd: iso.slice(8, 10), HH: iso.slice(11, 13), mm: iso.slice(14, 16), ss: iso.slice(17, 19) };
+        return String(pattern || 'yyyy-MM-dd').replace(/yyyy|MM|dd|HH|mm|ss/g, function (t) { return parts[t]; });
       },
       base64EncodeWebSafe: function (value) {
         const buf = Array.isArray(value) ? Buffer.from(value.map(function (b) { return b < 0 ? b + 256 : b; })) : Buffer.from(String(value), 'utf8');

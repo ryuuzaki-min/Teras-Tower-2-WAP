@@ -738,7 +738,7 @@
       runServerWithLoader().markErrorLogSeen(currentUser.sessionToken);
       return;
     }
-    const map = { admin: 'aspirasi', kelolaKepuasan: 'kepuasan', kelolaWarga: 'warga', kelolaAdmin: 'admin', kelolaNomorPenting: 'nomorPenting', kelolaNomorDarurat: 'nomorDarurat' };
+    const map = { admin: 'aspirasi', kelolaKepuasan: 'kepuasan', kelolaWarga: 'warga', kelolaAdmin: 'admin', kelolaNomorPenting: 'nomorPenting', kelolaNomorDarurat: 'nomorDarurat', kelolaAgenda: 'agendaUsulan' };
     const menu = map[page];
     if (!menu) return;
     const badge = document.getElementById('notificationBadge_' + menu);
@@ -920,6 +920,10 @@
     else if (page === 'faq') renderFaq();
     else if (page === 'kelolaFaq') renderKelolaFaq();
     else if (page === 'riwayatNotifikasi') renderRiwayatNotifikasi();
+    else if (page === 'papanTindakLanjut') renderPapanTindakLanjut();
+    else if (page === 'papanDetail') renderPapanDetail();
+    else if (page === 'apresiasi') renderApresiasi();
+    else if (page === 'tulisApresiasi') renderTulisApresiasi();
   }
 
   // ===================================================================
@@ -968,9 +972,11 @@
     try { return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()); } catch (e) { return false; }
   }
 
+  // v19: kebijakan privasi (syarat Google Play: dapat diakses dari dalam aplikasi).
+  const PRIVACY_POLICY_URL = 'https://ryuuzaki-min.github.io/Teras-Tower-2-WAP/kebijakan-privasi.html';
   function getCopyrightFooter() {
     const v = getDisplayVersion();
-    return '<div class="copyright-footer"><span>© 2026 Capt.Rea</span><span class="version-pill" title="Versi ' + escapeAttr(v.kind) + '">' +
+    return '<div class="copyright-footer"><span>© 2026 Capt.Rea · <a class="footer-link" href="' + PRIVACY_POLICY_URL + '" target="_blank" rel="noopener">Privasi</a></span><span class="version-pill" title="Versi ' + escapeAttr(v.kind) + '">' +
       '<span class="version-pill-kind">' + escapeHtml(v.kind) + '</span>v' + escapeHtml(v.text) + '</span></div>';
   }
 
@@ -1133,6 +1139,30 @@
   }
 
   const PENDING_WORK_WARN_DAYS = 3;
+  // v19 (A13): buka halaman terkait lalu gulir dan sorot datanya.
+  let pendingFocus = null;
+  function openPendingWorkItem(kind, key) {
+    pendingFocus = key ? { kind: kind, key: String(key), at: Date.now() } : null;
+    if (kind === 'aspirasi') navigateTo('admin');
+    else if (kind === 'resetPin') { wargaSearchQuery = String(key || ''); wargaSearchField = 'Username'; wargaAdminTab = 'all'; navigateTo('kelolaWarga'); }
+    else if (kind === 'agenda') { agendaAdminTab = 'proposals'; navigateTo('kelolaAgenda'); }
+  }
+
+  function applyPendingFocus(kind, selector) {
+    if (!pendingFocus || pendingFocus.kind !== kind) return;
+    if (Date.now() - pendingFocus.at > 60000) { pendingFocus = null; return; }
+    const target = document.querySelector(selector(pendingFocus.key));
+    pendingFocus = null;
+    if (!target) return;
+    target.classList.add('is-focus-target');
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(function () { target.classList.remove('is-focus-target'); }, 4000);
+  }
+
+  function cssEscapeValue(value) {
+    return (window.CSS && CSS.escape) ? CSS.escape(String(value)) : String(value).replace(/["\\]/g, '\\$&');
+  }
+
   function pendingWorkHTML(pending) {
     let html = '<section class="pending-work-section" aria-labelledby="pendingWorkTitle"><h2 class="pending-work-title" id="pendingWorkTitle">⏳ Perlu Tindakan</h2>';
     if (pending === null) return html + '<div class="spinner">Memuat daftar tugas…</div></section>';
@@ -1150,8 +1180,12 @@
         sub: function (item) { return item.username ? '@' + item.username : 'Reset PIN'; } },
       { data: pending && pending.feedback, icon: '💡', title: 'Masukan aplikasi belum ditinjau', page: 'customized',
         main: function (item) { return item.kategori || 'Masukan'; },
-        sub: function (item) { return item.username ? '@' + item.username : 'Masukan warga'; } }
+        sub: function (item) { return item.username ? '@' + item.username : 'Masukan warga'; } },
+      { data: pending && pending.agendaUsulan, icon: '📅', title: 'Usulan agenda menunggu', page: 'kelolaAgenda', kind: 'agenda',
+        main: function (item) { return item.judul || 'Usulan agenda'; },
+        sub: function (item) { return item.tanggal ? 'untuk ' + item.tanggal : 'Usulan warga'; } }
     ];
+    groups[0].kind = 'aspirasi'; groups[1].kind = 'resetPin';
     let hasItems = false;
     groups.forEach(function (group) {
       const total = Math.max(0, Number(group.data && group.data.total) || 0);
@@ -1162,7 +1196,10 @@
       html += items.map(function (item) {
         const mainText = group.main(item);
         const subText = group.sub(item);
-        const go = group.page === 'customized' ? 'openCustomizedTab(\'masukan\')' : 'navigateTo(\'' + group.page + '\')';
+        // v19 (A13): langsung ke data yang dimaksud, bukan hanya ke halamannya.
+        const focusKey = group.kind === 'resetPin' ? item.username : item.id;
+        const go = group.page === 'customized' ? 'openCustomizedTab(\'masukan\')'
+          : 'openPendingWorkItem(' + escapeAttr(JSON.stringify(group.kind || '')) + ',' + escapeAttr(JSON.stringify(String(focusKey || ''))) + ')';
         return '<button type="button" class="pending-work-item" onclick="' + go + '" aria-label="' + escapeAttr(mainText + ', ' + subText) + '">' +
           '<span class="pending-work-copy"><span class="pending-work-main">' + escapeHtml(mainText) + '</span><span class="pending-work-sub">' + escapeHtml(subText) + '</span></span>' +
           ageBadge(item.ageDays) + '</button>';
@@ -1186,6 +1223,7 @@
       const items = [];
       if (summary.aspirasi > 0) items.push({ icon: '📝', label: 'Aspirasi Baru', count: summary.aspirasi, page: 'admin' });
       if (summary.resetPin > 0) items.push({ icon: '🔑', label: 'Permintaan Reset PIN — buka Kelola Warga', count: summary.resetPin, page: 'kelolaWarga' });
+      if (summary.agendaUsulan > 0) items.push({ icon: '📅', label: 'Usulan Agenda Baru', count: summary.agendaUsulan, page: 'kelolaAgenda' });
       if (summary.kepuasan > 0) items.push({ icon: '⭐', label: 'Respon Kepuasan Baru', count: summary.kepuasan, page: 'kelolaKepuasan' });
       if (summary.warga > 0) items.push({ icon: '👥', label: 'Data Warga Diperbarui', count: summary.warga, page: 'kelolaWarga' });
       if (summary.anomaliWarga > 0) items.push({ icon: '⚠️', label: 'Data Warga Perlu Diverifikasi', count: summary.anomaliWarga, page: 'kelolaWarga' });
@@ -2414,6 +2452,8 @@
       ['kontakPenting', '📇', 'Kontak Penting', 'Nomor penting di lingkungan'],
       ['profil', '👤', 'Profil Saya', 'Perbarui data dan nomor WhatsApp'],
       ['jelajahSekitar', '🧭', 'Jelajah Sekitar', 'Cari dan bagikan rekomendasi'],
+      ['papanTindakLanjut', '📊', 'Papan Tindak Lanjut', 'Perkembangan aspirasi fasilitas bersama'],
+      ['apresiasi', '💚', 'Dinding Apresiasi', 'Ucapan terima kasih warga'],
       ['kalenderKerja', '🗓️', 'Kalender Kerja', 'Lihat agenda Tower 2'],
       ['feedback', '💡', 'Masukan Pengembangan', 'Sampaikan ide atau kendala aplikasi'],
       ['faq', '❓', 'Bantuan & FAQ', 'Arti fitur dan cara memakai aplikasi']
@@ -2759,6 +2799,12 @@
     document.body.appendChild(overlay);
     const title = document.getElementById('agendaTitle'); if (title) title.focus();
   }
+  // v19: tanggal hari ini di Asia/Jakarta (untuk batas bawah usulan agenda).
+  function jakartaTodayKey() {
+    const d = new Date(Date.now() + 7 * 3600 * 1000);
+    return d.toISOString().slice(0, 10);
+  }
+
   function openAgendaProposalForm(dateKey) {
     if (!currentUser || currentUser.isAdmin || currentUser.isSuperAdmin) { showAppNotice('Form usulan agenda hanya untuk warga.', 'error'); return; }
     closeAgendaModal();
@@ -2766,7 +2812,7 @@
     overlay.onclick = function (event) { if (event.target === overlay) closeAgendaModal(); };
     overlay.innerHTML = '<section class="agenda-modal" role="dialog" aria-modal="true" aria-labelledby="agendaProposalTitle"><header class="agenda-modal-header"><div><h2 id="agendaProposalTitle">Usulkan agenda</h2><p>Usulan diperiksa Admin dan baru tampil di kalender setelah disetujui.</p></div><button type="button" class="agenda-modal-close" onclick="closeAgendaModal()" aria-label="Tutup">×</button></header><div class="agenda-modal-content">' +
       '<div class="field"><label for="agendaProposalTitleInput">Nama kegiatan</label><input type="text" id="agendaProposalTitleInput" maxlength="120" placeholder="Contoh: Kerja bakti Tower 2"></div>' +
-      '<div class="field"><label for="agendaProposalDate">Tanggal</label><input type="date" id="agendaProposalDate" value="' + escapeAttr(dateKey || '') + '"></div>' +
+      '<div class="field"><label for="agendaProposalDate">Tanggal</label><input type="date" id="agendaProposalDate" min="' + escapeAttr(jakartaTodayKey()) + '" value="' + escapeAttr(dateKey || '') + '"></div>' +
       '<div class="agenda-time-fields"><div class="field"><label for="agendaProposalStart">Jam mulai</label><input type="time" id="agendaProposalStart"></div><div class="field"><label for="agendaProposalEnd">Jam selesai (opsional)</label><input type="time" id="agendaProposalEnd"></div></div>' +
       '<div class="field"><label for="agendaProposalLocation">Lokasi (opsional)</label><input type="text" id="agendaProposalLocation" maxlength="120" placeholder="Contoh: Lobby Tower 2"></div>' +
       '<div class="field"><label for="agendaProposalDetail">Rincian (opsional)</label><textarea id="agendaProposalDetail" maxlength="1200" placeholder="Keterangan untuk membantu Admin meninjau usulan"></textarea></div>' +
@@ -2883,6 +2929,7 @@
     }
     html += '</div>' + getCopyrightFooter();
     content.innerHTML = html;
+    applyPendingFocus('agenda', function (key) { return '.agenda-proposal-card[data-proposal-id="' + cssEscapeValue(key) + '"]'; });
   }
   function agendaManagementCardHTML(item) {
     const idArg = escapeAttr(JSON.stringify(String(item.id)));
@@ -2895,7 +2942,7 @@
   function agendaProposalCardHTML(item) {
     const idArg = escapeAttr(JSON.stringify(String(item.id)));
     const pending = item.status === 'Menunggu Verifikasi';
-    return '<article class="agenda-proposal-card' + (pending ? ' is-pending' : '') + '"><div class="agenda-management-card-top"><div><h3>' + escapeHtml(item.title) + '</h3><div class="agenda-event-time">' + escapeHtml(item.date) + ' · ' + escapeHtml(agendaTimeRange(item)) + ' WIB' + (item.location ? ' · ' + escapeHtml(item.location) : '') + '</div></div><span class="agenda-management-status ' + (pending ? 'is-pending' : item.status === 'Disetujui' ? 'is-active' : 'is-archived') + '">' + escapeHtml(item.status) + '</span></div>' +
+    return '<article class="agenda-proposal-card' + (pending ? ' is-pending' : '') + '" data-proposal-id="' + escapeAttr(item.id) + '"><div class="agenda-management-card-top"><div><h3>' + escapeHtml(item.title) + '</h3><div class="agenda-event-time">' + escapeHtml(item.date) + ' · ' + escapeHtml(agendaTimeRange(item)) + ' WIB' + (item.location ? ' · ' + escapeHtml(item.location) : '') + '</div></div><span class="agenda-management-status ' + (pending ? 'is-pending' : item.status === 'Disetujui' ? 'is-active' : 'is-archived') + '">' + escapeHtml(item.status) + '</span></div>' +
       '<div class="agenda-proposal-meta">Diusulkan oleh ' + escapeHtml(item.name) + ' (' + escapeHtml(item.username) + ')' + (item.submittedAt ? ' · ' + escapeHtml(item.submittedAt) : '') + '</div>' +
       (item.detail ? '<p>' + escapeHtml(item.detail) + '</p>' : '') + (item.reviewNote ? '<p class="agenda-review-note"><strong>Catatan pemeriksaan:</strong> ' + escapeHtml(item.reviewNote) + '</p>' : '') +
       (pending ? '<div class="agenda-management-actions"><button type="button" class="btn-primary" onclick="approveAgendaProposal(' + idArg + ')">Setujui &amp; tampilkan</button><button type="button" class="btn-small agenda-reject-button" onclick="openAgendaRejectForm(' + idArg + ')">Tolak</button></div>' : '') + '</article>';
@@ -3456,6 +3503,264 @@
   // ===================================================================
   // RIWAYAT SAYA
   // ===================================================================
+  // ===================================================================
+  // v19: PAPAN TINDAK LANJUT
+  // ===================================================================
+  const PAPAN_LOKASI_SARAN = ['Area umum', 'Lobi', 'Lift', 'Tangga darurat', 'Area parkir', 'Food court', 'Taman', 'Ruang sampah'];
+  let papanFilter = 'semua';
+  let papanData = null;
+  let papanDetailId = '';
+
+  function papanAdminSectionHTML(item, idArg) {
+    const id = String(item.id);
+    const on = !!item.publik;
+    return '<details class="papan-admin"' + (on ? ' open' : '') + '><summary>Papan Tindak Lanjut:&nbsp;<strong>' + (on ? 'Tampil ke warga' : 'Tidak tampil') + '</strong></summary>' +
+      '<p class="papan-admin-hint">Untuk aspirasi fasilitas bersama. Warga hanya melihat judul, lokasi, dan catatan di bawah ini — tidak pernah nama, unit, nomor WA, isi asli, atau foto pelapor.</p>' +
+      '<label class="papan-switch"><input type="checkbox" id="papanPublik_' + escapeAttr(id) + '"' + (on ? ' checked' : '') + '> Tampilkan di Papan Tindak Lanjut</label>' +
+      '<div class="field"><label for="papanJudul_' + escapeAttr(id) + '">Judul untuk warga</label><input type="text" maxlength="120" id="papanJudul_' + escapeAttr(id) + '" value="' + escapeAttr(item.judulPublik || '') + '" placeholder="mis. Lampu parkir motor sisi timur mati"></div>' +
+      '<div class="field"><label for="papanLokasi_' + escapeAttr(id) + '">Lokasi untuk warga</label><input type="text" maxlength="60" list="papanLokasiSaran" id="papanLokasi_' + escapeAttr(id) + '" value="' + escapeAttr(item.lokasiPublik || 'Area umum') + '"></div>' +
+      '<div class="field"><label for="papanCatatan_' + escapeAttr(id) + '">Catatan perkembangan (tampil di papan)</label><textarea maxlength="400" id="papanCatatan_' + escapeAttr(id) + '" placeholder="mis. Teknisi dijadwalkan memeriksa Rabu pagi.">' + escapeHtml(item.catatanPublik || '') + '</textarea></div>' +
+      '<label class="papan-check"><input type="checkbox" id="papanCek_' + escapeAttr(id) + '"> Judul dan catatan tidak memuat nama, nomor unit, atau nomor telepon</label>' +
+      '<button type="button" class="btn-secondary" onclick="saveAspirasiPublik(' + idArg + ')">Simpan pengaturan papan</button>' +
+      '<datalist id="papanLokasiSaran">' + PAPAN_LOKASI_SARAN.map(function (x) { return '<option value="' + escapeAttr(x) + '"></option>'; }).join('') + '</datalist>' +
+    '</details>';
+  }
+
+  function saveAspirasiPublik(id) {
+    const val = function (prefix) { const el = document.getElementById(prefix + id); return el ? (el.type === 'checkbox' ? el.checked : el.value.trim()) : ''; };
+    const publik = val('papanPublik_');
+    if (publik && !val('papanCek_')) { showAppNotice('Centang konfirmasi privasi dulu.', 'error'); return; }
+    runServerWithLoader()
+      .withSuccessHandler(function (result) {
+        if (!result || !result.success) { showAppNotice((result && result.message) || 'Belum tersimpan.', 'error'); if (result && result.notFound) renderAdminDashboard(); return; }
+        showAppNotice(result.message);
+        const cached = (adminAspirasiCache || []).find(function (x) { return String(x.id) === String(id); });
+        if (cached) { cached.publik = !!publik; cached.judulPublik = val('papanJudul_'); cached.lokasiPublik = val('papanLokasi_'); cached.catatanPublik = val('papanCatatan_'); }
+        const summary = document.querySelector('.admin-aspirasi-card[data-aspirasi-id="' + cssEscapeValue(id) + '"] .papan-admin summary strong');
+        if (summary) summary.textContent = publik ? 'Tampil ke warga' : 'Tidak tampil';
+      })
+      .withFailureHandler(function (err) { showAppNotice('Belum tersimpan: ' + (err && err.message || err), 'error'); })
+      .setAspirasiPublik({ sessionToken: currentUser.sessionToken, id: id, publik: !!publik, judul: val('papanJudul_'), lokasi: val('papanLokasi_'), catatan: val('papanCatatan_'), konfirmasiPrivasi: !!val('papanCek_') });
+  }
+
+  function hideMyAspirasiFromPapanUI(id) {
+    showAppConfirm('Aspirasi ini tidak akan tampil lagi di Papan Tindak Lanjut. Lanjutkan?', function () {
+      runServerWithLoader()
+        .withSuccessHandler(function (result) {
+          showAppNotice((result && result.message) || 'Selesai.', result && result.success ? 'success' : 'error');
+          if (result && result.success) { const it = (window._userHistoryList || []).find(function (x) { return String(x.id) === String(id); }); if (it) it.tampilDiPapan = false; renderUserHistoryRows(); }
+        })
+        .withFailureHandler(function (err) { showAppNotice('Gagal: ' + (err && err.message || err), 'error'); })
+        .hideMyAspirasiFromPapan({ sessionToken: currentUser.sessionToken, id: id });
+    }, 'Sembunyikan');
+  }
+
+  function papanStepsHTML(step, rejected) {
+    let html = '<ol class="papan-steps" aria-label="Tahap ' + step + ' dari 4">';
+    for (let i = 1; i <= 4; i++) html += '<li class="' + (i <= step ? (rejected && i === 4 ? 'is-rejected' : (step === 4 ? 'is-done' : 'is-on')) : '') + '"></li>';
+    return html + '</ol>';
+  }
+
+  function renderPapanTindakLanjut() {
+    const started = currentPage;
+    document.getElementById('pageContent').innerHTML = getTopBar('Papan Tindak Lanjut') + '<div class="page-title">Papan Tindak Lanjut</div><div class="spinner">Memuat…</div>';
+    runServerWithLoader()
+      .withSuccessHandler(function (result) {
+        if (currentPage !== started) return;
+        papanData = result && result.success ? result : { stats: {}, items: [] };
+        paintPapan();
+      })
+      .withFailureHandler(function (err) { if (currentPage === started) document.getElementById('pageContent').innerHTML = getTopBar('Papan Tindak Lanjut') + '<div class="empty-state">Gagal memuat: ' + escapeHtml(err && err.message || err) + '</div>'; })
+      .getPapanTindakLanjut(currentUser.sessionToken);
+  }
+
+  function setPapanFilter(value) { papanFilter = value; paintPapan(); }
+
+  function paintPapan() {
+    const d = papanData || { stats: {}, items: [] };
+    const st = d.stats || {};
+    const tanggap = st.rataTanggapJam == null ? '–' : (st.rataTanggapJam >= 48 ? (Math.round(st.rataTanggapJam / 2.4) / 10).toString().replace('.', ',') + ' hari' : String(st.rataTanggapJam).replace('.', ',') + ' jam');
+    const items = (d.items || []).filter(function (it) {
+      if (papanFilter === 'ditangani') return it.step < 4;
+      if (papanFilter === 'selesai') return it.step === 4;
+      return true;
+    });
+    const tabs = [['semua', 'Semua'], ['ditangani', 'Ditangani'], ['selesai', 'Selesai']];
+    let html = getTopBar('Papan Tindak Lanjut') + '<div class="page-title">Papan Tindak Lanjut</div>' +
+      '<p class="page-subtitle">Perkembangan aspirasi tentang fasilitas bersama. Nama dan unit pelapor tidak pernah ditampilkan.</p>' +
+      '<section class="papan-stats" aria-label="Ringkasan bulan ini"><div class="papan-stats-head"><strong>Bulan ini</strong><span>' + escapeHtml(d.bulan || '') + '</span></div>' +
+      '<div class="papan-stats-grid"><div><b>' + (Number(st.masuk) || 0) + '</b><span>Masuk</span></div><div class="is-warn"><b>' + (Number(st.ditangani) || 0) + '</b><span>Ditangani</span></div><div class="is-ok"><b>' + (Number(st.selesai) || 0) + '</b><span>Selesai</span></div></div>' +
+      '<p>Rata-rata pertama ditanggapi pengurus: <strong>' + escapeHtml(tanggap) + '</strong></p></section>' +
+      '<div class="notif-history-tabs" role="tablist" aria-label="Saring status">' + tabs.map(function (t) {
+        return '<button type="button" role="tab" aria-selected="' + (papanFilter === t[0]) + '" class="' + (papanFilter === t[0] ? 'active' : '') + '" onclick="setPapanFilter(' + escapeAttr(JSON.stringify(t[0])) + ')">' + t[1] + '</button>';
+      }).join('') + '</div>';
+    if (!items.length) html += '<div class="empty-state">Belum ada aspirasi yang ditampilkan pada kelompok ini.</div>';
+    else html += '<div class="papan-list">' + items.map(papanCardHTML).join('') + '</div>';
+    html += getCopyrightFooter();
+    document.getElementById('pageContent').innerHTML = html;
+  }
+
+  function papanCardHTML(it) {
+    const idArg = escapeAttr(JSON.stringify(String(it.id)));
+    return '<article class="papan-card">' +
+      '<div class="papan-card-meta"><span class="papan-chip">' + escapeHtml(it.kategori || 'Aspirasi') + '</span><span>' + escapeHtml(it.lokasi) + (it.masukPada ? ' · ' + escapeHtml(it.masukPada) : '') + '</span></div>' +
+      '<button type="button" class="papan-card-title" onclick="openPapanDetail(' + idArg + ')">' + escapeHtml(it.judul) + '</button>' +
+      papanStepsHTML(it.step, it.ditolak) +
+      '<div class="papan-card-foot"><span class="papan-status papan-status-' + it.step + (it.ditolak ? ' is-rejected' : '') + '">' + escapeHtml(it.statusLabel) + '</span>' +
+      (it.milikSaya ? '<span class="papan-mine">Aspirasi Anda</span>' : papanSupportButtonHTML(it)) + '</div></article>';
+  }
+
+  function papanSupportButtonHTML(it) {
+    return '<button type="button" class="papan-support' + (it.didukung ? ' is-on' : '') + '" aria-pressed="' + (!!it.didukung) + '" onclick="togglePapanSupport(' + escapeAttr(JSON.stringify(String(it.id))) + ')">Saya juga · ' + (Number(it.dukungan) || 0) + '</button>';
+  }
+
+  function togglePapanSupport(id) {
+    runServerWithLoader()
+      .withSuccessHandler(function (result) {
+        if (!result || !result.success) { showAppNotice((result && result.message) || 'Gagal.', 'error'); return; }
+        const it = papanData && (papanData.items || []).find(function (x) { return String(x.id) === String(id); });
+        if (it) { it.didukung = result.didukung; it.dukungan = result.dukungan; }
+        if (currentPage === 'papanDetail') renderPapanDetail(); else paintPapan();
+      })
+      .withFailureHandler(function (err) { showAppNotice('Gagal: ' + (err && err.message || err), 'error'); })
+      .toggleAspirasiDukungan({ sessionToken: currentUser.sessionToken, id: id });
+  }
+
+  function openPapanDetail(id) { papanDetailId = String(id || ''); navigateTo('papanDetail'); }
+
+  function renderPapanDetail() {
+    const started = currentPage;
+    const back = ''; // tombol Kembali dari getTopBar kembali ke papan
+    document.getElementById('pageContent').innerHTML = getTopBar('Perkembangan aspirasi') + back + '<div class="spinner">Memuat…</div>';
+    runServerWithLoader()
+      .withSuccessHandler(function (result) {
+        if (currentPage !== started) return;
+        if (!result || !result.success) { document.getElementById('pageContent').innerHTML = getTopBar('Perkembangan aspirasi') + back + '<div class="empty-state">' + escapeHtml((result && result.message) || 'Tidak ditemukan.') + '</div>'; return; }
+        const it = result.item;
+        let html = getTopBar('Perkembangan aspirasi') + back +
+          '<div class="papan-card-meta"><span class="papan-chip">' + escapeHtml(it.kategori || 'Aspirasi') + '</span><span>' + escapeHtml(it.lokasi) + '</span></div>' +
+          '<h2 class="papan-detail-title">' + escapeHtml(it.judul) + '</h2>' +
+          '<section class="papan-support-box"><div><strong>' + (Number(it.dukungan) || 0) + ' warga juga mengalami</strong><span>Membantu pengurus menentukan prioritas</span></div>' +
+          (it.milikSaya ? '<span class="papan-mine">Aspirasi Anda</span>' : '<button type="button" class="btn-primary papan-support-main' + (it.didukung ? ' is-on' : '') + '" aria-pressed="' + (!!it.didukung) + '" onclick="togglePapanSupport(' + escapeAttr(JSON.stringify(String(it.id))) + ')">' + (it.didukung ? 'Batal "Saya juga"' : 'Saya juga') + '</button>') + '</section>' +
+          '<section class="papan-timeline" aria-label="Riwayat tindak lanjut"><h3>Riwayat tindak lanjut</h3><ol>' + it.timeline.map(function (t, i) {
+            const current = t.done && (i === it.timeline.length - 1 || !it.timeline[i + 1].done);
+            return '<li class="' + (t.done ? 'is-done' : '') + (current && it.step < 4 ? ' is-current' : '') + (it.ditolak && i === 3 ? ' is-rejected' : '') + '"><strong>' + escapeHtml(t.label) + '</strong>' +
+              (t.waktu && t.done ? '<span>' + escapeHtml(t.waktu) + '</span>' : (t.done ? '' : '<span>Belum</span>')) +
+              (t.catatan && t.done ? '<p>“' + escapeHtml(t.catatan) + '”</p>' : '') + '</li>';
+          }).join('') + '</ol></section>' +
+          '<p class="papan-privacy-note">Hanya aspirasi tentang fasilitas bersama yang dipilih pengurus yang tampil di papan. Nama, unit, nomor WhatsApp, dan foto pelapor tidak pernah ditampilkan.</p>' +
+          getCopyrightFooter();
+        document.getElementById('pageContent').innerHTML = html;
+      })
+      .withFailureHandler(function (err) { if (currentPage === started) showAppNotice('Gagal memuat: ' + (err && err.message || err), 'error'); })
+      .getPapanDetail(currentUser.sessionToken, papanDetailId);
+  }
+
+  // ===================================================================
+  // v19: DINDING APRESIASI (terpisah dari Aspirasi)
+  // ===================================================================
+  const APRESIASI_ICON = { 'Keamanan': '🛡️', 'Kebersihan': '🧹', 'Teknisi': '🔧', 'Pengelola': '🏢', 'Pengurus': '🤝', 'Sesama warga': '🏠' };
+  let apresiasiData = null;
+  let apresiasiFilter = 'Semua';
+  let apresiasiDraftTarget = '';
+
+  function renderApresiasi() {
+    const started = currentPage;
+    document.getElementById('pageContent').innerHTML = getTopBar('Dinding Apresiasi') + '<div class="page-title">Dinding Apresiasi</div><div class="spinner">Memuat…</div>';
+    runServerWithLoader()
+      .withSuccessHandler(function (result) {
+        if (currentPage !== started) return;
+        apresiasiData = result && result.success ? result : { items: [], targets: [] };
+        paintApresiasi();
+      })
+      .withFailureHandler(function (err) { if (currentPage === started) document.getElementById('pageContent').innerHTML = getTopBar('Dinding Apresiasi') + '<div class="empty-state">Gagal memuat: ' + escapeHtml(err && err.message || err) + '</div>'; })
+      .getApresiasi(currentUser.sessionToken);
+  }
+
+  function setApresiasiFilter(value) { apresiasiFilter = value; paintApresiasi(); }
+
+  function paintApresiasi() {
+    const d = apresiasiData || { items: [], targets: [] };
+    const tabs = ['Semua'].concat(d.targets || []);
+    const items = (d.items || []).filter(function (it) { return apresiasiFilter === 'Semua' || it.untuk === apresiasiFilter; });
+    let html = getTopBar('Dinding Apresiasi') + '<div class="page-title">Dinding Apresiasi</div>' +
+      '<p class="page-subtitle">Ucapan terima kasih untuk petugas, pengelola, dan sesama warga Tower 2.</p>' +
+      '<button type="button" class="btn-primary apresiasi-write" onclick="navigateTo(\'tulisApresiasi\')">＋ Tulis apresiasi</button>' +
+      '<div class="notif-history-tabs" role="tablist" aria-label="Untuk siapa">' + tabs.map(function (t) {
+        return '<button type="button" role="tab" aria-selected="' + (apresiasiFilter === t) + '" class="' + (apresiasiFilter === t ? 'active' : '') + '" onclick="setApresiasiFilter(' + escapeAttr(JSON.stringify(t)) + ')">' + escapeHtml(t) + '</button>';
+      }).join('') + '</div>';
+    if (!items.length) html += '<div class="empty-state">Belum ada apresiasi di sini. Jadilah yang pertama berterima kasih.</div>';
+    else html += '<div class="apresiasi-list">' + items.map(function (it) {
+      const idArg = escapeAttr(JSON.stringify(String(it.id)));
+      return '<article class="apresiasi-card">' +
+        '<div class="apresiasi-to"><span class="apresiasi-icon" aria-hidden="true">' + (APRESIASI_ICON[it.untuk] || '💚') + '</span><span><small>Untuk</small><strong>' + escapeHtml(it.untukDetail || it.untuk) + '</strong>' + (it.untukDetail ? '<small class="apresiasi-cat">' + escapeHtml(it.untuk) + '</small>' : '') + '</span></div>' +
+        '<p class="apresiasi-text">' + escapeHtml(it.pesan) + '</p>' +
+        '<div class="apresiasi-foot"><span>dari ' + escapeHtml(it.milikSaya ? 'Anda' : it.dari) + (it.waktu ? ' · ' + escapeHtml(it.waktu) : '') + '</span>' +
+        '<span class="apresiasi-actions">' +
+          (it.bisaHapus ? '<button type="button" class="apresiasi-delete" onclick="deleteApresiasiUI(' + idArg + ',' + (it.milikSaya ? 'true' : 'false') + ')" aria-label="Hapus apresiasi">Hapus</button>' : '') +
+          '<button type="button" class="apresiasi-thanks' + (it.didukung ? ' is-on' : '') + '" aria-pressed="' + (!!it.didukung) + '" onclick="toggleApresiasiThanks(' + idArg + ')"><span aria-hidden="true">' + (it.didukung ? '♥' : '♡') + '</span> Ikut berterima kasih · ' + (Number(it.dukungan) || 0) + '</button>' +
+        '</span></div></article>';
+    }).join('') + '</div>';
+    html += getCopyrightFooter();
+    document.getElementById('pageContent').innerHTML = html;
+  }
+
+  function toggleApresiasiThanks(id) {
+    runServerWithLoader()
+      .withSuccessHandler(function (result) {
+        if (!result || !result.success) { showAppNotice((result && result.message) || 'Gagal.', 'error'); if (result && !result.success) renderApresiasi(); return; }
+        const it = apresiasiData && apresiasiData.items.find(function (x) { return String(x.id) === String(id); });
+        if (it) { it.didukung = result.didukung; it.dukungan = result.dukungan; }
+        paintApresiasi();
+      })
+      .withFailureHandler(function (err) { showAppNotice('Gagal: ' + (err && err.message || err), 'error'); })
+      .toggleApresiasiDukungan({ sessionToken: currentUser.sessionToken, id: id });
+  }
+
+  function deleteApresiasiUI(id, mine) {
+    showAppConfirm(mine ? 'Hapus apresiasi Anda dari dinding?' : 'Hapus apresiasi ini dari dinding (moderasi)?', function () {
+      runServerWithLoader()
+        .withSuccessHandler(function (result) {
+          showAppNotice((result && result.message) || 'Selesai.', result && result.success ? 'success' : 'error');
+          if (result && result.success && apresiasiData) { apresiasiData.items = apresiasiData.items.filter(function (x) { return String(x.id) !== String(id); }); paintApresiasi(); }
+        })
+        .withFailureHandler(function (err) { showAppNotice('Gagal: ' + (err && err.message || err), 'error'); })
+        .deleteApresiasi({ sessionToken: currentUser.sessionToken, id: id });
+    }, 'Hapus');
+  }
+
+  function renderTulisApresiasi() {
+    const targets = (apresiasiData && apresiasiData.targets && apresiasiData.targets.length) ? apresiasiData.targets : ['Keamanan', 'Kebersihan', 'Teknisi', 'Pengelola', 'Pengurus', 'Sesama warga'];
+    const label = currentUser.isAdmin || currentUser.isSuperAdmin ? 'Pengurus Tower 2' : (currentUser.statusWisma || 'Warga Tower 2');
+    const html = getTopBar('Tulis apresiasi') + '<div class="page-title">Tulis apresiasi</div>' +
+      '<fieldset class="apresiasi-targets"><legend>Untuk siapa?</legend>' + targets.map(function (t) {
+        return '<label class="apresiasi-target"><input type="radio" name="apresiasiUntuk" value="' + escapeAttr(t) + '"' + (apresiasiDraftTarget === t ? ' checked' : '') + ' onchange="apresiasiDraftTarget=this.value"><span>' + (APRESIASI_ICON[t] || '') + ' ' + escapeHtml(t) + '</span></label>';
+      }).join('') + '</fieldset>' +
+      '<div class="field"><label for="apresiasiDetail">Siapa tepatnya? <span class="field-optional">(boleh dikosongkan)</span></label><input type="text" id="apresiasiDetail" maxlength="60" placeholder="mis. Pak satpam shift malam"></div>' +
+      '<div class="field"><label for="apresiasiPesan">Pesan</label><textarea id="apresiasiPesan" maxlength="280" rows="5" placeholder="Ceritakan apa yang membuat Anda berterima kasih" oninput="document.getElementById(\'apresiasiCount\').textContent = this.value.length + \' / 280\'"></textarea><div class="apresiasi-count" id="apresiasiCount">0 / 280</div></div>' +
+      '<div class="apresiasi-preview"><span>Tampil di dinding sebagai</span><strong>dari ' + escapeHtml(label) + '</strong><small>Nama Anda tidak ditampilkan. Anda, Admin, dan Super Admin bisa menghapusnya kapan saja.</small></div>' +
+      '<button type="button" class="btn-primary" onclick="submitApresiasiUI()">Kirim apresiasi</button>' +
+      getCopyrightFooter();
+    document.getElementById('pageContent').innerHTML = html;
+  }
+
+  function submitApresiasiUI() {
+    const chosen = document.querySelector('input[name="apresiasiUntuk"]:checked');
+    const pesan = document.getElementById('apresiasiPesan').value.trim();
+    if (!chosen) { showAppNotice('Pilih untuk siapa apresiasi ini.', 'error'); return; }
+    if (pesan.length < 5) { showAppNotice('Tulis pesan minimal 5 karakter.', 'error'); return; }
+    runServerWithLoader()
+      .withSuccessHandler(function (result) {
+        if (!result || !result.success) { showAppNotice((result && result.message) || 'Belum terkirim.', 'error'); return; }
+        apresiasiDraftTarget = '';
+        showAppNotice(result.message);
+        apresiasiFilter = 'Semua';
+        navigateTo('apresiasi');
+      })
+      .withFailureHandler(function (err) { showAppNotice('Belum terkirim: ' + (err && err.message || err), 'error'); })
+      .submitApresiasi({ sessionToken: currentUser.sessionToken, untuk: chosen.value, untukDetail: document.getElementById('apresiasiDetail').value.trim(), pesan: pesan });
+  }
+
   function renderRiwayatSaya() {
     const content = document.getElementById('pageContent');
     runServerWithLoader()
@@ -3472,7 +3777,7 @@
     content.innerHTML = getTopBar('Riwayat') + '<div class="page-title">Riwayat Aspirasi Saya</div><div class="status-tabs"><button type="button" class="status-tab active" data-user-tab="Dibaca" onclick="setUserHistoryTab(\'Dibaca\')">Dibaca</button><button type="button" class="status-tab" data-user-tab="Diselesaikan" onclick="setUserHistoryTab(\'Diselesaikan\')">Diselesaikan</button><button type="button" class="status-tab" data-user-tab="Ditolak" onclick="setUserHistoryTab(\'Ditolak\')">Ditolak</button></div><div id="userHistoryRows"></div>' + getCopyrightFooter(); renderUserHistoryRows();
   }
   function setUserHistoryTab(tab) { userHistoryTab = tab; document.querySelectorAll('[data-user-tab]').forEach(function (b) { b.classList.toggle('active', b.dataset.userTab === tab); }); renderUserHistoryRows(); }
-  function renderUserHistoryRows() { const box = document.getElementById('userHistoryRows'); if (!box) return; const rows = (window._userHistoryList || []).filter(function (item) { return (item.statusAspirasi === 'Baru' ? 'Dibaca' : item.statusAspirasi) === userHistoryTab; }); if (!rows.length) { box.innerHTML = '<div class="empty-state">Belum ada aspirasi pada tab ini.</div>'; return; } box.innerHTML = rows.map(function (item) { const status = item.statusAspirasi === 'Diselesaikan' ? 'Diselesaikan' : item.statusAspirasi === 'Ditolak' ? 'Ditolak' : 'Dibaca'; return '<div class="card"><div class="card-top"><div class="card-title">' + escapeHtml(item.jenisAspirasi) + ' — ' + escapeHtml(item.kategori) + '</div><span class="badge ' + (status === 'Diselesaikan' ? 'badge-sudah' : 'badge-belum') + '">' + status + '</span></div><div class="card-date">' + escapeHtml(item.timestamp) + (item.prioritas ? ' · Prioritas ' + escapeHtml(item.prioritas) : '') + '</div><div class="card-detail">' + escapeHtml(item.detailAspirasi) + '</div>' + ((item.lokasiMasalah || item.lokasiMasalahDetail) ? '<div class="card-detail issue-location-summary"><strong>📍 Lokasi masalah:</strong> ' + escapeHtml([item.lokasiMasalah, item.lokasiMasalahDetail].filter(Boolean).join(' · ')) + '</div>' : '') + (item.catatanTindakLanjut ? '<div class="card-detail"><strong>Catatan Admin:</strong> ' + escapeHtml(item.catatanTindakLanjut) + '</div>' : '') + (item.catatanPenolakan ? '<div class="card-detail"><strong>Alasan penolakan:</strong> ' + escapeHtml(item.catatanPenolakan) + '</div>' : '') + (item.fotoTindakLanjut ? '<div class="card-detail"><button type="button" class="btn-small btn-notification" onclick="loadFollowupPhoto(' + escapeAttr(JSON.stringify(String(item.id))) + ')">📷 Lihat foto tindak lanjut</button></div>' : '') + '</div>'; }).join(''); }
+  function renderUserHistoryRows() { const box = document.getElementById('userHistoryRows'); if (!box) return; const rows = (window._userHistoryList || []).filter(function (item) { return (item.statusAspirasi === 'Baru' ? 'Dibaca' : item.statusAspirasi) === userHistoryTab; }); if (!rows.length) { box.innerHTML = '<div class="empty-state">Belum ada aspirasi pada tab ini.</div>'; return; } box.innerHTML = rows.map(function (item) { const status = item.statusAspirasi === 'Diselesaikan' ? 'Diselesaikan' : item.statusAspirasi === 'Ditolak' ? 'Ditolak' : 'Dibaca'; return '<div class="card"><div class="card-top"><div class="card-title">' + escapeHtml(item.jenisAspirasi) + ' — ' + escapeHtml(item.kategori) + '</div><span class="badge ' + (status === 'Diselesaikan' ? 'badge-sudah' : 'badge-belum') + '">' + status + '</span></div><div class="card-date">' + escapeHtml(item.timestamp) + (item.prioritas ? ' · Prioritas ' + escapeHtml(item.prioritas) : '') + '</div><div class="card-detail">' + escapeHtml(item.detailAspirasi) + '</div>' + ((item.lokasiMasalah || item.lokasiMasalahDetail) ? '<div class="card-detail issue-location-summary"><strong>📍 Lokasi masalah:</strong> ' + escapeHtml([item.lokasiMasalah, item.lokasiMasalahDetail].filter(Boolean).join(' · ')) + '</div>' : '') + (item.catatanTindakLanjut ? '<div class="card-detail"><strong>Catatan Admin:</strong> ' + escapeHtml(item.catatanTindakLanjut) + '</div>' : '') + (item.catatanPenolakan ? '<div class="card-detail"><strong>Alasan penolakan:</strong> ' + escapeHtml(item.catatanPenolakan) + '</div>' : '') + (item.fotoTindakLanjut ? '<div class="card-detail"><button type="button" class="btn-small btn-notification" onclick="loadFollowupPhoto(' + escapeAttr(JSON.stringify(String(item.id))) + ')">📷 Lihat foto tindak lanjut</button></div>' : '') + (item.tampilDiPapan ? '<div class="papan-owner-note"><span>Tampil di Papan Tindak Lanjut tanpa nama dan unit Anda.</span><button type="button" class="btn-small" onclick="hideMyAspirasiFromPapanUI(' + escapeAttr(JSON.stringify(String(item.id))) + ')">Sembunyikan dari papan</button></div>' : '') + '</div>'; }).join(''); }
 
   // ===================================================================
   // KONTAK (Nomor Penting + Nomor Darurat)
@@ -3677,7 +3982,7 @@
         const lokasi = (item.statusWisma === 'Penghuni BAST') ? (' — Lt.' + item.lantai + ' No.' + item.unit) : (' — ' + item.statusWisma);
         const searchText = [item.id, item.nama, item.statusWisma, item.lantai, item.unit, item.jenisAspirasi, item.kategori, item.detailAspirasi, item.lokasiMasalah, item.lokasiMasalahDetail].join(' ');
         const lokasiMasalahLabel = [item.lokasiMasalah, item.lokasiMasalahDetail].filter(Boolean).join(' · ');
-        html += '<div class="card admin-aspirasi-card" data-status="' + escapeAttr(item.statusAspirasi || 'Dibaca') + '" data-jenis="' + escapeAttr(item.jenisAspirasi || '') + '" data-kategori="' + escapeAttr(item.kategori || '') + '" data-prioritas="' + escapeAttr(item.prioritas || 'Normal') + '" data-tanggal="' + escapeAttr(item.tanggalISO || '') + '" data-search="' + escapeAttr(searchText) + '">' +
+        html += '<div class="card admin-aspirasi-card" data-aspirasi-id="' + escapeAttr(item.id) + '" data-status="' + escapeAttr(item.statusAspirasi || 'Dibaca') + '" data-jenis="' + escapeAttr(item.jenisAspirasi || '') + '" data-kategori="' + escapeAttr(item.kategori || '') + '" data-prioritas="' + escapeAttr(item.prioritas || 'Normal') + '" data-tanggal="' + escapeAttr(item.tanggalISO || '') + '" data-search="' + escapeAttr(searchText) + '">' +
           '<div class="card-top"><div class="card-title">' + escapeHtml(item.nama) + escapeHtml(lokasi) + '</div><span class="badge ' + badgeClass + '">' + badgeText + '</span></div>' +
           (item.prioritas === 'Tinggi' ? '<div class="badge badge-belum" style="margin-bottom:6px;">Prioritas Tinggi</div>' : '') +
           '<div class="card-date"><strong>#' + escapeHtml(item.id) + '</strong> · ' + escapeHtml(item.timestamp) + ' · ' + escapeHtml(item.jenisAspirasi) + ' — ' + escapeHtml(item.kategori) + '</div>' +
@@ -3699,14 +4004,17 @@
         const idArg = escapeAttr(JSON.stringify(String(item.id)));
         html += '<div class="field"><label>Foto Tindak Lanjut (opsional)</label>' + (item.fotoTindakLanjut ? '<div class="card-detail"><button type="button" class="btn-small btn-notification" onclick="loadFollowupPhoto(' + idArg + ')">📷 Lihat foto sebelumnya</button></div>' : '') + '<input type="file" accept="image/*" onchange="onFotoTLSelected(event, ' + idArg + ')"></div>';
         html += '<button class="btn-primary" onclick="saveTindakLanjut(' + idArg + ')">Simpan Update</button>';
+        html += papanAdminSectionHTML(item, idArg);
         html += '</div>';
       });
     }
     html += getCopyrightFooter();
+    if (pendingFocus && pendingFocus.kind === 'aspirasi') { adminJenisTab = 'all'; adminSecondaryTab = 'all'; }
     content.innerHTML = html;
     renderAdminSecondaryTabs();
     bindAdminFilterButtons();
     filterAdminAspirasi();
+    applyPendingFocus('aspirasi', function (key) { return '.admin-aspirasi-card[data-aspirasi-id="' + cssEscapeValue(key) + '"]'; });
   }
 
   function bindAdminFilterButtons() {
@@ -4039,10 +4347,11 @@
       } else {
         actions = '<span class="account-only-note" title="Akun ini dikelola melalui Kelola Admin">Kelola Admin</span>';
       }
-      html += '<tr' + (w.PendingPinReset ? ' class="warga-row-pending"' : '') + '><td>' + escapeHtml(username) + '</td><td>' + escapeHtml(w.Nama || '-') + '</td><td>' + escapeHtml(w.Status_Wisma || '-') + '</td><td>' + escapeHtml(w.Lantai || '-') + '</td><td>' + escapeHtml(w.Unit || '-') + '</td><td>' + escapeHtml(maskWhatsApp(w.Nomor_WhatsApp)) + '</td><td><span class="role-chip ' + (w.IsAdmin ? 'role-chip-admin' : '') + '">' + (w.IsAdmin ? 'Admin' : 'Warga') + '</span>' + (w.PendingPinReset ? '<span class="pending-reset-label">Reset diminta</span>' : '') + (w.DataAnomaly ? '<span class="data-anomaly-label" title="' + escapeAttr(w.DataAnomalyReason || 'Perlu verifikasi') + '">⚠️ Verifikasi</span>' : '') + attentionReasonHtml + '</td><td><div class="warga-actions">' + actions + '</div></td></tr>';
+      html += '<tr data-username="' + escapeAttr(username) + '"' + (w.PendingPinReset ? ' class="warga-row-pending"' : '') + '><td>' + escapeHtml(username) + '</td><td>' + escapeHtml(w.Nama || '-') + '</td><td>' + escapeHtml(w.Status_Wisma || '-') + '</td><td>' + escapeHtml(w.Lantai || '-') + '</td><td>' + escapeHtml(w.Unit || '-') + '</td><td>' + escapeHtml(maskWhatsApp(w.Nomor_WhatsApp)) + '</td><td><span class="role-chip ' + (w.IsAdmin ? 'role-chip-admin' : '') + '">' + (w.IsAdmin ? 'Admin' : 'Warga') + '</span>' + (w.PendingPinReset ? '<span class="pending-reset-label">Reset diminta</span>' : '') + (w.DataAnomaly ? '<span class="data-anomaly-label" title="' + escapeAttr(w.DataAnomalyReason || 'Perlu verifikasi') + '">⚠️ Verifikasi</span>' : '') + attentionReasonHtml + '</td><td><div class="warga-actions">' + actions + '</div></td></tr>';
     });
     html += '</tbody></table></div><div class="pagination-controls"><button class="btn-small pagination-edge" onclick="setWargaAdminPage(1)"' + (wargaAdminPage <= 1 ? ' disabled' : '') + ' aria-label="Halaman awal">« Awal</button><button class="btn-small" onclick="setWargaAdminPage(' + (wargaAdminPage - 1) + ')"' + (wargaAdminPage <= 1 ? ' disabled' : '') + '>← Sebelumnya</button><span>Halaman ' + wargaAdminPage + ' / ' + totalPages + '</span><button class="btn-small" onclick="setWargaAdminPage(' + (wargaAdminPage + 1) + ')"' + (wargaAdminPage >= totalPages ? ' disabled' : '') + '>Berikutnya →</button><button class="btn-small pagination-edge" onclick="setWargaAdminPage(' + totalPages + ')"' + (wargaAdminPage >= totalPages ? ' disabled' : '') + ' aria-label="Halaman akhir">Akhir »</button></div>';
     area.innerHTML = html;
+    applyPendingFocus('resetPin', function (key) { return 'tr[data-username="' + cssEscapeValue(key) + '"]'; });
   }
 
   function setWargaAdminPage(page) { wargaAdminPage = Number(page) || 1; renderWargaTablePage(); }
@@ -4422,7 +4731,7 @@
   let managementLogCategory = 'warga';
   function renderLogPengelolaan() {
     const categories = [['warga', 'Kelola Warga'], ['pin', 'Kelola PIN'], ['aspirasi', 'Kelola Aspirasi'], ['kepuasan', 'Kelola Kepuasan'], ['agenda', 'Kelola Agenda'], ['nomorPenting', 'Kelola Nomor Penting'], ['nomorDarurat', 'Kelola Nomor Darurat']];
-    categories.push(['faq', 'Kelola FAQ'], ['jelajah', 'Kelola Jelajah']);
+    categories.push(['faq', 'Kelola FAQ'], ['jelajah', 'Kelola Jelajah'], ['papan', 'Papan & Apresiasi']);
     if (currentUser.isSuperAdmin) categories.push(['admin', 'Kelola Admin'], ['aplikasi', 'Kelola Aplikasi'], ['akun', 'Akun Warga'], ['logSystem', 'Keamanan & Sistem']);
     const tabs = categories.map(function (item) { return '<button type="button" class="status-tab ' + (managementLogCategory === item[0] ? 'active' : '') + '" onclick="loadManagementLogCategory(\'' + item[0] + '\')">' + item[1] + '</button>'; }).join('');
     document.getElementById('pageContent').innerHTML = getTopBar('Log Pengelolaan') + '<div class="page-title">Log Pengelolaan</div><div class="status-tabs management-log-tabs">' + tabs + '</div><div id="managementLogRows"><div class="spinner">Memuat log...</div></div>' + getCopyrightFooter();
@@ -4446,7 +4755,8 @@
     SET_TOWER_LOCATION: 'Atur titik Tower 2', FILL_JELAJAH_COORDINATES: 'Lengkapi titik lokasi',
     REGISTER: 'Pendaftaran akun', CLEANUP_HAPUS_AKUN: 'Hapus otomatis (profil tak lengkap)', CLEANUP_UJI: 'Uji pembersihan akun',
     DELETE_OWN_ACCOUNT: 'Warga menghapus akunnya', DELETE_OWN_ACCOUNT_FAILED: 'Gagal hapus akun (PIN salah)',
-    LOGIN_FAILED: 'Gagal masuk', MARK_ERROR_LOG_SEEN: 'Tandai log sistem dibaca', PANGGILAN_DITOLAK: 'Panggilan fungsi ditolak', LAPORAN_RILIS_DITOLAK: 'Laporan rilis ditolak', PERBAIKI_ID_ASPIRASI: 'Perbaikan ID aspirasi otomatis'
+    LOGIN_FAILED: 'Gagal masuk', MARK_ERROR_LOG_SEEN: 'Tandai log sistem dibaca', PANGGILAN_DITOLAK: 'Panggilan fungsi ditolak', LAPORAN_RILIS_DITOLAK: 'Laporan rilis ditolak', PERBAIKI_ID_ASPIRASI: 'Perbaikan ID aspirasi otomatis',
+    PUBLISH_ASPIRASI: 'Tampilkan aspirasi di papan', UNPUBLISH_ASPIRASI: 'Sembunyikan aspirasi dari papan', SUBMIT_APRESIASI: 'Apresiasi baru', DELETE_APRESIASI: 'Hapus apresiasi', RETENSI_DATA: 'Retensi data otomatis'
   };
   function managementActionLabel(code) { return MANAGEMENT_ACTION_LABELS[code] || String(code || ''); }
 
@@ -4901,7 +5211,8 @@
     return '<div class="card danger-zone" id="deleteAccountCard">' +
       '<div class="card-title">Hapus akun</div>' +
       '<p class="danger-zone-text">Akun dan data pribadi Anda (nama, nomor WhatsApp, unit, PIN, simpanan, dan notifikasi) akan dihapus permanen. ' +
-      'Aspirasi, ulasan, dan rekomendasi yang pernah Anda kirim tetap ada sebagai catatan pengelolaan, tanpa nama Anda.</p>' +
+      'Aspirasi yang pernah Anda kirim tetap ada sebagai catatan pengelolaan dengan inisial nama saja; nomor WhatsApp dan unit disandikan. Ulasan, rekomendasi, dan apresiasi tetap tampil tanpa nama Anda. ' +
+        '<a class="footer-link" href="' + PRIVACY_POLICY_URL + '" target="_blank" rel="noopener">Kebijakan Privasi</a></p>' +
       '<div id="deleteAccountForm" hidden>' +
         '<div class="field"><label for="deleteAccountPin">PIN Anda</label><input type="password" id="deleteAccountPin" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="current-password"></div>' +
         '<div class="field"><label for="deleteAccountConfirm">Ketik <strong>HAPUS</strong> untuk mengonfirmasi</label><input type="text" id="deleteAccountConfirm" autocomplete="off" autocapitalize="characters"></div>' +

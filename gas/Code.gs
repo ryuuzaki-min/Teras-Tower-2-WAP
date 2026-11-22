@@ -1,5 +1,5 @@
 // ===================================================================
-// TERAS TOWER 2 - Backend Apps Script (v18 - HAPUS AKUN MANDIRI, LOG NOTIFIKASI, SINKRON ADMIN, CACHE, PENGUATAN A8/A11)
+// TERAS TOWER 2 - Backend Apps Script (v19 - PAPAN TINDAK LANJUT, DINDING APRESIASI, AGENDA TAHAP 1, RETENSI DATA, PRIVASI)
 // ===================================================================
 
 // SUPER ADMIN CREDENTIALS
@@ -520,8 +520,9 @@ function getManagementLog(sessionToken, category) {
     jelajah: ['SUBMIT_JELAJAH_RECOMMENDATION', 'UPDATE_JELAJAH_RECOMMENDATION', 'VERIFY_JELAJAH_RECOMMENDATION', 'UPSERT_JELAJAH_REVIEW',
       'MODERATE_JELAJAH_COMMENT', 'REPORT_JELAJAH', 'RESOLVE_JELAJAH_REPORT', 'ADD_JELAJAH_CATEGORY', 'UPDATE_JELAJAH_CATEGORY',
       'ADD_JELAJAH_TYPE', 'UPDATE_JELAJAH_TYPE', 'SET_TOWER_LOCATION', 'FILL_JELAJAH_COORDINATES', 'HIDE_JELAJAH_RECOMMENDATION', 'RESTORE_JELAJAH_RECOMMENDATION'],
+    papan: ['PUBLISH_ASPIRASI', 'UNPUBLISH_ASPIRASI', 'SUBMIT_APRESIASI', 'DELETE_APRESIASI'],
     akun: ['REGISTER', 'CLEANUP_HAPUS_AKUN', 'CLEANUP_UJI', 'DELETE_OWN_ACCOUNT', 'DELETE_OWN_ACCOUNT_FAILED'],
-    logSystem: ['LOGIN_FAILED', 'MARK_ERROR_LOG_SEEN', 'PANGGILAN_DITOLAK', 'LAPORAN_RILIS_DITOLAK', 'PERBAIKI_ID_ASPIRASI']
+    logSystem: ['LOGIN_FAILED', 'MARK_ERROR_LOG_SEEN', 'PANGGILAN_DITOLAK', 'LAPORAN_RILIS_DITOLAK', 'PERBAIKI_ID_ASPIRASI', 'RETENSI_DATA']
   };
   // Kategori yang hanya untuk Super Admin (berisi aktivitas pihak lain/sistem).
   const superOnly = { admin: true, aplikasi: true, akun: true, logSystem: true };
@@ -732,6 +733,8 @@ function include(filename) {
 // Bila menambah fitur baru yang dipanggil klien, tambahkan namanya di sini.
 // ===================================================================
 const TT2_API_NAMES = [
+  'getApresiasi', 'submitApresiasi', 'deleteApresiasi', 'toggleApresiasiDukungan',
+  'getPapanTindakLanjut', 'getPapanDetail', 'setAspirasiPublik', 'hideMyAspirasiFromPapan', 'toggleAspirasiDukungan',
   'getNotificationLog',
   'deleteMyAccount',
   'getBootstrap',
@@ -1091,6 +1094,7 @@ function updateProfileUnlocked_(payload) {
 
     for (let i = 1; i < values.length; i++) {
       if (String(values[i][usernameCol]).toLowerCase() === session.username.toLowerCase()) {
+        assertRowOwner_(sheet, i + 1, usernameCol, session.username);
         sheet.getRange(i + 1, namaCol + 1).setValue(sheetText_(nama));
         sheet.getRange(i + 1, statusCol + 1).setValue(sheetText_(statusWisma));
         sheet.getRange(i + 1, lantaiCol + 1).setValue(normalizedFloorUnit.floor);
@@ -1973,6 +1977,7 @@ function updateWargaByAdminUnlocked_(payload) {
 
     for (let i = 1; i < values.length; i++) {
       if (String(values[i][usernameCol]).toLowerCase() === targetUsername.toLowerCase()) {
+        assertRowOwner_(sheet, i + 1, usernameCol, targetUsername);
         if (namaCol >= 0) sheet.getRange(i + 1, namaCol + 1).setValue(sheetText_(nama));
         if (statusCol >= 0) sheet.getRange(i + 1, statusCol + 1).setValue(sheetText_(statusWisma));
         if (lantaiCol >= 0) sheet.getRange(i + 1, lantaiCol + 1).setValue(normalizedFloorUnit.floor);
@@ -2011,6 +2016,7 @@ function deleteWargaUnlocked_(payload) {
     const usernameCol = headers.indexOf('Username');
     for (let i = values.length - 1; i >= 1; i--) {
       if (String(values[i][usernameCol]).toLowerCase() === payload.username.toLowerCase()) {
+        assertRowOwner_(sheet, i + 1, usernameCol, payload.username);
         sheet.deleteRow(i + 1);
         bumpSessionVersion_(payload.username);
         removePushTokensForUser_(payload.username);
@@ -2239,7 +2245,12 @@ function getPendingWork(sessionToken) {
       });
     }
 
-    const result = { aspirasi: pack(aspirasi), resetPin: pack(resetPin), feedback: pack(feedback) };
+    const agendaUsulan = [];
+    if (getSheet_(SHEET_AGENDA_PROPOSALS)) getSheetData_(SHEET_AGENDA_PROPOSALS).forEach(function (row) {
+      if (!row.ID || String(row.Status || '') !== 'Menunggu Verifikasi') return;
+      agendaUsulan.push({ id: String(row.ID), judul: String(row.Judul || ''), tanggal: agendaDateKey_(row.Tanggal), ageDays: ageDays(row.Timestamp), rank: 0 });
+    });
+    const result = { aspirasi: pack(aspirasi), resetPin: pack(resetPin), feedback: pack(feedback), agendaUsulan: pack(agendaUsulan) };
     cache.put(cacheKey, JSON.stringify(result), 30);
     return result;
   } catch (err) {
@@ -2258,7 +2269,7 @@ function getNotificationSummary(sessionToken) {
       try { return JSON.parse(cached); } catch (ignore) { invalidateNotificationSummaryCache_(username); }
     }
     const now = new Date().getTime();
-    const result = { aspirasi: 0, kepuasan: 0, warga: 0, admin: 0, nomorPenting: 0, nomorDarurat: 0, resetPin: 0, anomaliWarga: 0 };
+    const result = { aspirasi: 0, kepuasan: 0, warga: 0, admin: 0, nomorPenting: 0, nomorDarurat: 0, resetPin: 0, anomaliWarga: 0, agendaUsulan: 0 };
     result.anomaliWarga = getWargaFloorUnitAnomalies_().length;
   const aspirasiSheet = getSheet_(SHEET_DATA);
   if (aspirasiSheet) {
@@ -2284,6 +2295,14 @@ function getNotificationSummary(sessionToken) {
     if (aspirasiLastSeen === null) setNotificationLastSeen_(username, 'aspirasi');
     else result.aspirasi = getSheetData_(SHEET_DATA).filter(function (row) {
       return aspirationStatusOf_(row) === 'Baru' && notificationDate_(row.Timestamp) > aspirasiLastSeen;
+    }).length;
+  }
+  // v19: usulan agenda menunggu, dengan aturan yang sama seperti aspirasi (A4).
+  if (getSheet_(SHEET_AGENDA_PROPOSALS)) {
+    // Belum pernah membuka Kelola Agenda: semua usulan yang masih menunggu dihitung.
+    const agendaLastSeen = getNotificationLastSeen_(username, 'agendaUsulan') || 0;
+    result.agendaUsulan = getSheetData_(SHEET_AGENDA_PROPOSALS).filter(function (row) {
+      return String(row.Status || '') === 'Menunggu Verifikasi' && notificationDate_(row.Timestamp) > agendaLastSeen;
     }).length;
   }
   const sources = [
@@ -2323,7 +2342,7 @@ function getNotificationSummary(sessionToken) {
 }
 function markNotificationSeen(sessionToken, menu) {
   const session = requireSession_(sessionToken, ['admin', 'super_admin']);
-  const allowed = ['aspirasi', 'kepuasan', 'warga', 'admin', 'nomorPenting', 'nomorDarurat', 'resetPin', 'residentAspirasi'];
+  const allowed = ['aspirasi', 'kepuasan', 'warga', 'admin', 'nomorPenting', 'nomorDarurat', 'resetPin', 'residentAspirasi', 'agendaUsulan'];
   if (allowed.indexOf(String(menu || '')) < 0) return { success: false, message: 'Menu notifikasi tidak valid.' };
   setNotificationLastSeen_(session.username, String(menu));
   invalidateNotificationSummaryCache_(session.username);
@@ -2331,7 +2350,7 @@ function markNotificationSeen(sessionToken, menu) {
 }
 function markAllNotificationsSeen(sessionToken) {
   const session = requireSession_(sessionToken, ['admin', 'super_admin']);
-  ['aspirasi', 'kepuasan', 'warga', 'admin', 'nomorPenting', 'nomorDarurat', 'resetPin'].forEach(function (menu) {
+  ['aspirasi', 'kepuasan', 'warga', 'admin', 'nomorPenting', 'nomorDarurat', 'resetPin', 'agendaUsulan'].forEach(function (menu) {
     setNotificationLastSeen_(session.username, menu);
   });
   invalidateNotificationSummaryCache_(session.username);
@@ -2403,21 +2422,14 @@ function getSheetData_(sheetName) {
       return obj;
     });
 }
-function ensureSheetColumn_(sheet, headerName) {
-  const lastColumn = Math.max(sheet.getLastColumn(), 1);
-  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
-  const existing = headers.indexOf(headerName);
-  if (existing >= 0) return existing + 1;
-  const nextColumn = lastColumn + 1;
-  sheet.getRange(1, nextColumn).setValue(headerName);
-  return nextColumn;
-}
+// (v19: definisi ganda ensureSheetColumn_ dihapus; yang berlaku ada di bawah.)
 function ensureAspirasiBookColumns_() {
   return withScriptLock_(function () {
     const sheet = getSheet_(SHEET_DATA);
     if (!sheet) throw new Error('Sheet Data Aspirasi tidak ditemukan.');
     ensureSheetColumn_(sheet, 'Lokasi_Masalah');
     ensureSheetColumn_(sheet, 'Lokasi_Masalah_Detail');
+    PAPAN_COLUMNS.forEach(function (header) { ensureSheetColumn_(sheet, header); });
     return true;
   });
 }
@@ -2698,6 +2710,7 @@ function getRiwayatSaya(username, sessionToken) {
         kesediaanSwadaya: row.Kesediaan_Swadaya || '',
         sudahDitindaklanjuti: row.Sudah_Ditindaklanjuti || 'Belum',
         statusAspirasi: ['Baru', 'Dibaca', 'Diselesaikan', 'Ditolak'].indexOf(String(row.StatusAspirasi || '')) >= 0 ? String(row.StatusAspirasi) : (String(row.Sudah_Ditindaklanjuti || 'Belum') === 'Sudah' ? 'Diselesaikan' : 'Dibaca'),
+        tampilDiPapan: String(row.Publik || '') === 'Ya',
         prioritas: row.Prioritas || '',
         catatanPenolakan: row.CatatanPenolakan || '',
         catatanTindakLanjut: row.Catatan_Tindak_Lanjut || '',
@@ -2782,6 +2795,10 @@ function getSemuaAspirasi(requesterUsername, sessionToken) {
       lastUpdatedAt: row.LastUpdatedAt ? formatTanggal_(row.LastUpdatedAt) : '',
       lastUpdatedBy: row.LastUpdatedBy || '',
       lastUpdateType: row.LastUpdateType || '',
+      publik: String(row.Publik || '') === 'Ya',
+      judulPublik: String(row.JudulPublik || ''),
+      lokasiPublik: String(row.LokasiPublik || ''),
+      catatanPublik: String(row.CatatanPublik || ''),
       tanggalISO: formatTanggalISO_(row.Timestamp),
       prioritas: row.Prioritas || ''
     };
@@ -2873,6 +2890,13 @@ function updateTindakLanjut(payload) {
           sheet.getRange(i + 1, lastUpdatedCol).setValue(new Date());
           sheet.getRange(i + 1, lastUpdatedByCol).setValue(payload.adminUsername);
           sheet.getRange(i + 1, lastUpdateTypeCol).setValue(updateType);
+          // v19: waktu untuk linimasa Papan Tindak Lanjut dan rata-rata waktu tanggap.
+          const dibacaPadaCol = ensureSheetColumn_(sheet, 'DibacaPada');
+          const selesaiPadaCol = ensureSheetColumn_(sheet, 'SelesaiPada');
+          if (!values[i][dibacaPadaCol - 1]) sheet.getRange(i + 1, dibacaPadaCol).setValue(new Date());
+          if (status8 === 'Diselesaikan') { if (!values[i][selesaiPadaCol - 1]) sheet.getRange(i + 1, selesaiPadaCol).setValue(new Date()); }
+          else if (values[i][selesaiPadaCol - 1]) sheet.getRange(i + 1, selesaiPadaCol).setValue('');
+          invalidatePapanCache_();
           writeAuditLog_('UPDATE_TINDAK_LANJUT', payload.adminUsername, targetId, updateType);
           // v12: kabari warga pengirim hanya bila statusnya benar-benar berubah.
           const ownerCol = headers.indexOf('Username');
@@ -3801,6 +3825,9 @@ function submitAgendaProposal(payload) {
   const location = String(payload.location || '').trim();
   const detail = String(payload.detail || '').trim();
   if (!isValidAgendaDate_(date)) return { success: false, message: 'Tanggal usulan tidak valid.' };
+  // v19 (A12): usulan untuk tanggal yang sudah lewat ditolak (zona Asia/Jakarta).
+  const todayKey = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM-dd');
+  if (date < todayKey) return { success: false, message: 'Tanggal usulan sudah lewat. Pilih hari ini atau tanggal mendatang.' };
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(startTime)) return { success: false, message: 'Jam mulai harus diisi dengan format HH:mm.' };
   if (endTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(endTime)) return { success: false, message: 'Jam selesai tidak valid.' };
   if (endTime && endTime <= startTime) return { success: false, message: 'Jam selesai harus setelah jam mulai.' };
@@ -3826,6 +3853,9 @@ function submitAgendaProposal(payload) {
     writeAgendaRow_(sheet, headers, headers.map(function (header) { return Object.prototype.hasOwnProperty.call(proposalRecord, header) ? proposalRecord[header] : ''; }));
     cache.put(rateKey, '1', 20);
     writeAuditLog_('SUBMIT_AGENDA_PROPOSAL', session.username, id, title);
+    // v19 (A12): kabari admin agar usulan cepat diperiksa.
+    queuePush_({ admins: true }, { title: 'Usulan agenda baru', body: title + ' — ' + formatAgendaDateForPush_(date, startTime), page: 'kelolaAgenda', tag: 'agenda-usulan-' + id });
+    invalidateAdminNotificationCaches_();
     return { success: true, id: id, message: 'Usulan agenda terkirim dan menunggu pemeriksaan Admin. Agenda belum tampil di kalender.' };
   });
 }
@@ -3919,7 +3949,16 @@ function reviewAgendaProposal(payload) {
     proposalSheet.getRange(rowNumber, reviewedByCol).setValue(sheetText_(session.username));
     if (agendaIdCol > 0) proposalSheet.getRange(rowNumber, agendaIdCol).setValue(agendaId);
     writeAuditLog_(decision === 'approve' ? 'APPROVE_AGENDA_PROPOSAL' : 'REJECT_AGENDA_PROPOSAL', session.username, id, note || String(proposal.Judul || ''));
-    if (decision === 'approve') queuePush_({ all: true }, { title: 'Agenda baru Tower 2', body: String(proposal.Judul || '') + ' — ' + formatAgendaDateForPush_(agendaDateKey_(proposal.Tanggal), agendaTimeKey_(proposal.JamMulai)), page: 'kalenderKerja' });
+    if (decision === 'approve') queuePush_({ all: true, excludeUsernames: [String(proposal.Username || '')] }, { title: 'Agenda baru Tower 2', body: String(proposal.Judul || '') + ' — ' + formatAgendaDateForPush_(agendaDateKey_(proposal.Tanggal), agendaTimeKey_(proposal.JamMulai)), page: 'kalenderKerja' });
+    // v19 (A12): kabari pengusul hasilnya, termasuk catatan admin bila ditolak.
+    if (proposal.Username) {
+      queuePush_({ usernames: [String(proposal.Username)] }, decision === 'approve'
+        ? { title: 'Usulan agenda disetujui', body: String(proposal.Judul || '') + ' sudah tampil di kalender Tower 2.', page: 'kalenderKerja' }
+        : { title: 'Usulan agenda belum disetujui', body: String(proposal.Judul || '') + (note ? ' — ' + note : ''), page: 'kalenderKerja' });
+    }
+    // Notifikasi "Usulan agenda baru" di HP admin lain diganti, dan bulatan diperbarui.
+    queuePush_({ admins: true, excludeUsernames: [session.username] }, { title: 'Usulan agenda sudah diperiksa', body: String(proposal.Judul || '') + ' · ' + (decision === 'approve' ? 'disetujui' : 'ditolak') + ' oleh ' + session.username, page: 'kelolaAgenda', tag: 'agenda-usulan-' + id });
+    invalidateAdminNotificationCaches_();
     return { success: true, agendaId: agendaId, message: decision === 'approve' ? 'Usulan disetujui dan agenda sekarang tampil di kalender.' : 'Usulan agenda ditolak.' };
   });
 }
@@ -4066,8 +4105,41 @@ function runAccountCleanup_(options) {
 // ===================================================================
 const DELETED_ACCOUNT_LABEL = 'Warga (akun dihapus)';
 
+// v19: inisial nama, mis. "Budi Santoso" -> "B.S.".
+function nameInitials_(name) {
+  const parts = String(name || '').replace(/[^A-Za-z\u00C0-\u024F ]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+  return parts.slice(0, 3).map(function (p) { return p.charAt(0).toUpperCase() + '.'; }).join('');
+}
+
+// v19: menyandikan data pribadi satu arah (HMAC-SHA256 dengan kunci rahasia proyek).
+// Hasilnya tidak bisa dibaca kembali, tetapi nilai yang sama selalu menghasilkan sandi
+// yang sama, sehingga pengurus masih bisa mengenali laporan dari nomor/unit yang sama.
+function sealPersonalValue_(value, kind) {
+  let text = String(value == null ? '' : value).trim();
+  if (!text) return '';
+  if (kind === 'wa') text = normalizeWhatsAppNumber_(text) || text.replace(/[^0-9]/g, '');
+  else text = text.toLowerCase();
+  const bytes = Utilities.computeHmacSha256Signature(kind + ':' + text, getPinHashPepper_() + ':data', Utilities.Charset.UTF_8);
+  return 'enc:' + bytes.slice(0, 8).map(function (b) { const v = b < 0 ? b + 256 : b; return ('0' + v.toString(16)).slice(-2); }).join('');
+}
+
+function deletedAccountLabel_(name) {
+  const initials = nameInitials_(name);
+  return initials ? 'Warga ' + initials + ' (akun dihapus)' : DELETED_ACCOUNT_LABEL;
+}
+
 // Mengubah atau menghapus baris milik username di satu sheet. changes: {Header: nilaiBaru}
 // atau null untuk menghapus barisnya. Mengembalikan jumlah baris yang tersentuh.
+// v19: lapisan kedua di samping kunci tulis — tepat sebelum menulis/menghapus, baca ulang
+// username di baris itu. Bila sudah bergeser (mis. sheet diurutkan manual di Google Sheets
+// saat aplikasi berjalan), batalkan daripada mengubah baris warga lain.
+function assertRowOwner_(sheet, rowNumber, usernameCol, username) {
+  const actual = String(sheet.getRange(rowNumber, usernameCol + 1).getValue() || '').trim().toLowerCase();
+  if (actual !== String(username || '').trim().toLowerCase()) {
+    throw new Error('Data berubah saat sedang disimpan. Muat ulang lalu coba lagi.');
+  }
+}
+
 function scrubUserRows_(sheetName, usernameHeader, username, changes) {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
   if (!sheet || sheet.getLastRow() < 2) return 0;
@@ -4088,10 +4160,17 @@ function scrubUserRows_(sheetName, usernameHeader, username, changes) {
   // Tulis hanya sel yang berubah. Menulis ulang baris utuh dari getValues() berbahaya:
   // apostrof pelindung (sheetText_) sudah hilang saat dibaca, sehingga teks "=..." bisa
   // menjadi rumus dan "0812..." kehilangan angka nol.
-  const cols = Object.keys(changes).map(function (header) { return { col: headers.indexOf(header), value: changes[header] }; })
-    .filter(function (c) { return c.col >= 0; });
+  // changes boleh berupa fungsi(rowObj) → {Header: nilai}, untuk nilai yang bergantung pada isi baris.
   rows.forEach(function (i) {
-    cols.forEach(function (c) { sheet.getRange(i + 1, c.col + 1).setValue(c.value); });
+    let rowChanges = changes;
+    if (typeof changes === 'function') {
+      const obj = {}; headers.forEach(function (h, c) { obj[h] = values[i][c]; });
+      rowChanges = changes(obj) || {};
+    }
+    Object.keys(rowChanges).forEach(function (header) {
+      const col = headers.indexOf(header);
+      if (col >= 0) sheet.getRange(i + 1, col + 1).setValue(rowChanges[header]);
+    });
   });
   return rows.length;
 }
@@ -4127,7 +4206,11 @@ function deleteMyAccount(payload) {
 
       const label = sheetText_(DELETED_ACCOUNT_LABEL);
       const report = {};
-      report.aspirasi = scrubUserRows_(SHEET_DATA, 'Username', username, { Username: '', Email_Pengisi: '', Nama: label, Nomor_WhatsApp: '', Unit: '' });
+      // v19: aspirasi memakai inisial; nomor WA dan unit disandikan satu arah.
+      report.aspirasi = scrubUserRows_(SHEET_DATA, 'Username', username, function (row) {
+        return { Username: '', Email_Pengisi: '', Nama: sheetText_(deletedAccountLabel_(row.Nama)),
+          Nomor_WhatsApp: sealPersonalValue_(row.Nomor_WhatsApp, 'wa'), Unit: sealPersonalValue_(row.Unit, 'unit') };
+      });
       report.jelajah = scrubUserRows_(SHEET_JELAJAH, 'Username', username, { Username: '', NamaPengirim: label });
       report.ulasan = scrubUserRows_(SHEET_JELAJAH_ULASAN, 'Username', username, { Username: '', NamaPengulas: label });
       report.laporanJelajah = scrubUserRows_(SHEET_JELAJAH_LAPORAN, 'Username', username, { Username: '', NamaPelapor: label });
@@ -4135,6 +4218,10 @@ function deleteMyAccount(payload) {
       report.kepuasan = scrubUserRows_(SHEET_KEPUASAN, 'Username', username, { Username: '' });
       report.usulanAgenda = scrubUserRows_(SHEET_AGENDA_PROPOSALS, 'Username', username, { Username: '', Nama: label });
       report.favorit = scrubUserRows_(SHEET_JELAJAH_FAVORIT, 'Username', username, null);
+      report.dukunganAspirasi = scrubUserRows_(SHEET_ASPIRASI_DUKUNGAN, 'Username', username, null);
+      // Apresiasi tetap tampil tanpa pengirim; dukungan pengguna ini dihapus.
+      report.apresiasi = scrubUserRows_(SHEET_APRESIASI, 'Username', username, { Username: '' });
+      report.dukunganApresiasi = scrubUserRows_(SHEET_APRESIASI_DUKUNGAN, 'Username', username, null);
       report.resetPin = scrubUserRows_(SHEET_RESETREQUESTS, 'Username', username, null);
       report.statusBaca = scrubUserRows_('NotificationState', 'Username', username, null);
       report.sesi = scrubUserRows_(SHEET_SESSIONS, 'Username', username, null);
@@ -4187,6 +4274,11 @@ function jalankanPembersihanAkunHarian(e) {
     try { report.jelajahTitik = withScriptLock_(function () { return fillJelajahCoordinates_(25); }); } catch (err) { writeApplicationError_('fillJelajahCoordinates_', err, 'sistem'); }
     try { report.logNotifikasiDipangkas = withScriptLock_(pruneNotificationLog_); } catch (err) { writeApplicationError_('pruneNotificationLog_', err, 'sistem'); }
     try { report.idAspirasi = withScriptLock_(repairAspirasiIds_); } catch (err) { writeApplicationError_('repairAspirasiIds_', err, 'sistem'); }
+    try { report.retensi = withScriptLock_(applyDataRetention_); } catch (err) { writeApplicationError_('applyDataRetention_', err, 'sistem'); }
+    try {
+      const fp = PropertiesService.getScriptProperties();
+      if (fp.getProperty('FAQ_SEEDED') === '1' && fp.getProperty('FAQ_V19') !== '1') { withScriptLock_(ensureFaqSheet_); report.faqV19 = true; }
+    } catch (err) { writeApplicationError_('ensureFaqSheet_', err, 'sistem'); }
     return report;
   } catch (err) {
     writeApplicationError_('jalankanPembersihanAkunHarian', err, 'sistem');
@@ -4749,6 +4841,20 @@ const SHEET_FAQ = 'FAQ';
 const FAQ_HEADERS = ['ID', 'Bagian', 'Peran', 'Pertanyaan', 'Jawaban', 'Urutan', 'UpdatedAt', 'UpdatedBy'];
 const FAQ_ROLES = ['warga', 'admin', 'super'];
 
+// v19: FAQ untuk fitur baru. Ikut jadi bawaan pada instalasi baru, dan ditambahkan
+// SEKALI ke sheet FAQ yang sudah ada (Script Property FAQ_V19=1), tanpa menimpa isi.
+const FAQ_V19_ADDITIONS = [
+  ['Papan Tindak Lanjut', 'warga', 'Apa itu Papan Tindak Lanjut?', 'Papan yang menunjukkan perkembangan aspirasi tentang fasilitas bersama: masuk, dibaca pengurus, ditindaklanjuti, sampai selesai. Hanya aspirasi yang dipilih pengurus yang tampil, dan nama, unit, nomor WhatsApp, isi asli, serta foto pelapor tidak pernah ditampilkan.'],
+  ['Papan Tindak Lanjut', 'warga', 'Untuk apa tombol "Saya juga"?', 'Tekan bila Anda mengalami masalah yang sama. Jumlahnya membantu pengurus menentukan prioritas. Tekan sekali lagi untuk membatalkan.'],
+  ['Papan Tindak Lanjut', 'warga', 'Aspirasi saya tampil di papan. Bisa disembunyikan?', 'Bisa. Buka Riwayat Saya, lalu ketuk "Sembunyikan dari papan" pada aspirasi itu. Pengurus akan diberi tahu.'],
+  ['Papan Tindak Lanjut', 'admin', 'Kapan aspirasi sebaiknya ditampilkan di papan?', 'Untuk masalah fasilitas bersama (lift, lampu, kebersihan lorong, parkir). Tulis judul dan catatan versi publik tanpa nama, nomor unit, atau nomor telepon, lalu centang konfirmasi privasi. Pelapor mendapat notifikasi dan bisa menyembunyikannya.'],
+  ['Dinding Apresiasi', 'warga', 'Apa itu Dinding Apresiasi?', 'Tempat mengucapkan terima kasih kepada petugas keamanan, kebersihan, teknisi, pengelola, pengurus, atau sesama warga. Apresiasi langsung tampil, dan pengirimnya ditampilkan sebagai jenis warga, bukan nama. Maksimal 5 apresiasi per hari.'],
+  ['Dinding Apresiasi', 'warga', 'Bagaimana menghapus apresiasi?', 'Ketuk "Hapus" pada apresiasi yang Anda tulis. Admin dan Super Admin juga bisa menghapus apresiasi yang tidak pantas.'],
+  ['Akun & privasi', 'warga', 'Bagaimana menghapus akun saya?', 'Buka Menu → Profil Saya, gulir ke bawah, ketuk "Hapus akun saya…", masukkan PIN, lalu ketik HAPUS. Akun dan data pribadi langsung dihapus. Aspirasi yang pernah dikirim tetap tersimpan sebagai catatan pengelolaan dengan inisial nama saja.'],
+  ['Akun & privasi', 'warga', 'Di mana kebijakan privasi aplikasi ini?', 'Ketuk tautan "Privasi" di bagian bawah setiap halaman.']
+];
+Array.prototype.push.apply(FAQ_DEFAULTS, FAQ_V19_ADDITIONS);
+
 function faqRolesFor_(role) {
   if (role === 'super_admin') return ['warga', 'admin', 'super'];
   if (role === 'admin') return ['warga', 'admin'];
@@ -4782,6 +4888,18 @@ function ensureFaqSheet_() {
     if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, FAQ_HEADERS.length).clearContent();
     if (rows.length) sheet.getRange(2, 1, rows.length, FAQ_HEADERS.length).setValues(rows);
     props.setProperty('FAQ_SEEDED', '1');
+    props.setProperty('FAQ_V19', '1');
+  } else if (props.getProperty('FAQ_V19') !== '1') {
+    const existing = sheet.getLastRow() > 1 ? sheet.getRange(2, 1, sheet.getLastRow() - 1, FAQ_HEADERS.length).getValues() : [];
+    const questions = existing.map(function (r) { return String(r[3] || '').trim().toLowerCase(); });
+    let order = existing.reduce(function (m, r) { return Math.max(m, Number(r[5]) || 0); }, 0);
+    const now = new Date();
+    FAQ_V19_ADDITIONS.forEach(function (item, index) {
+      if (questions.indexOf(item[2].toLowerCase()) >= 0) return;
+      order += 10;
+      sheet.appendRow(['FAQ-V19-' + ('0' + (index + 1)).slice(-2), item[0], item[1], item[2], item[3], order, now, 'bawaan']);
+    });
+    props.setProperty('FAQ_V19', '1');
   }
   return sheet;
 }
@@ -5216,4 +5334,423 @@ function fillJelajahCoordinates(sessionToken) {
     writeAuditLog_('FILL_JELAJAH_COORDINATES', session.username, 'JelajahRekomendasi', JSON.stringify(report));
     return { success: true, report: report, message: report.filled + ' titik dilengkapi, ' + report.failed + ' tidak ditemukan' + (report.remaining ? ', ' + report.remaining + ' menunggu giliran' : '') + '.' };
   });
+}
+
+// ===================================================================
+// v19 — PAPAN TINDAK LANJUT (transparansi aspirasi)
+// -------------------------------------------------------------------
+// Admin memilih aspirasi yang tampil ke warga (biasanya soal fasilitas bersama) dan
+// menulis judul/lokasi/catatan versi publik. Warga hanya melihat versi publik itu:
+// TIDAK PERNAH nama, unit, nomor WA, isi asli, atau foto pelapor. Pelapor bisa
+// menyembunyikan aspirasinya sendiri dari papan. Warga lain bisa menekan
+// "Saya juga mengalami" (sheet AspirasiDukungan) untuk membantu prioritas.
+// ===================================================================
+const PAPAN_COLUMNS = ['Publik', 'JudulPublik', 'LokasiPublik', 'CatatanPublik', 'PublikPada', 'PublikOleh', 'DibacaPada', 'SelesaiPada'];
+const SHEET_ASPIRASI_DUKUNGAN = 'AspirasiDukungan';
+const PAPAN_CACHE_KEY = 'papan-v1';
+
+function invalidatePapanCache_() {
+  try { CacheService.getScriptCache().remove(PAPAN_CACHE_KEY); } catch (ignore) {}
+}
+
+function papanStage_(row) {
+  const status = aspirationStatusOf_(row);
+  if (status === 'Diselesaikan') return { step: 4, label: 'Selesai' };
+  if (status === 'Ditolak') return { step: 4, label: 'Tidak dapat ditindaklanjuti', rejected: true };
+  if (status === 'Baru') return { step: 1, label: 'Menunggu dibaca pengurus' };
+  if (String(row.CatatanPublik || '').trim()) return { step: 3, label: 'Sedang ditindaklanjuti' };
+  return { step: 2, label: 'Dibaca pengurus' };
+}
+
+function getAspirasiDukunganSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_ASPIRASI_DUKUNGAN);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_ASPIRASI_DUKUNGAN);
+    sheet.appendRow(['AspirasiID', 'Username', 'CreatedAt']);
+    try { sheet.hideSheet(); } catch (ignore) {}
+  }
+  return sheet;
+}
+
+// Data papan bersama (tanpa info per pengguna), di-cache 60 detik.
+function buildPapanBase_() {
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get(PAPAN_CACHE_KEY);
+  if (cached) { try { return JSON.parse(cached); } catch (ignore) {} }
+  const rows = getSheet_(SHEET_DATA) ? getSheetData_(SHEET_DATA) : [];
+  const now = new Date();
+  const monthKey = Utilities.formatDate(now, 'Asia/Jakarta', 'yyyy-MM');
+  const inMonth = function (value) { const t = notificationDate_(value); return t ? Utilities.formatDate(new Date(t), 'Asia/Jakarta', 'yyyy-MM') === monthKey : false; };
+  const stats = { masuk: 0, ditangani: 0, selesai: 0, rataTanggapJam: null };
+  let responseSum = 0, responseCount = 0;
+  const items = [];
+  rows.forEach(function (row) {
+    if (!row.ID) return;
+    const status = aspirationStatusOf_(row);
+    if (inMonth(row.Timestamp)) stats.masuk++;
+    if (status === 'Dibaca') stats.ditangani++;
+    if (status === 'Diselesaikan' && inMonth(row.SelesaiPada || row.Tanggal_Tindak_Lanjut || row.LastUpdatedAt)) stats.selesai++;
+    const t0 = notificationDate_(row.Timestamp), t1 = notificationDate_(row.DibacaPada);
+    if (t0 && t1 && t1 >= t0 && inMonth(row.DibacaPada)) { responseSum += (t1 - t0); responseCount++; }
+    if (String(row.Publik || '') !== 'Ya') return;
+    const stage = papanStage_(row);
+    const updated = Math.max(notificationDate_(row.LastUpdatedAt) || 0, notificationDate_(row.PublikPada) || 0, t0 || 0);
+    items.push({
+      id: String(row.ID), kategori: String(row.Kategori || ''), judul: String(row.JudulPublik || ''), lokasi: String(row.LokasiPublik || 'Area umum'),
+      catatan: String(row.CatatanPublik || ''), step: stage.step, statusLabel: stage.label, ditolak: !!stage.rejected,
+      masukPada: t0 ? formatTanggal_(new Date(t0)) : '', diperbaruiMs: updated
+    });
+  });
+  if (responseCount) stats.rataTanggapJam = Math.round(responseSum / responseCount / 360000) / 10;
+  items.sort(function (a, b) { return (a.step === 4) - (b.step === 4) || b.diperbaruiMs - a.diperbaruiMs; });
+  const base = { bulan: Utilities.formatDate(now, 'Asia/Jakarta', 'MM/yyyy'), stats: stats, items: items };
+  try { cache.put(PAPAN_CACHE_KEY, JSON.stringify(base), 60); } catch (ignore) {}
+  return base;
+}
+
+function papanSupportIndex_(username) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_ASPIRASI_DUKUNGAN);
+  const counts = {}, mine = {};
+  if (!sheet || sheet.getLastRow() < 2) return { counts: counts, mine: mine };
+  const me = String(username || '').toLowerCase();
+  getSheetData_(SHEET_ASPIRASI_DUKUNGAN).forEach(function (row) {
+    const id = String(row.AspirasiID || '');
+    if (!id) return;
+    counts[id] = (counts[id] || 0) + 1;
+    if (String(row.Username || '').toLowerCase() === me) mine[id] = true;
+  });
+  return { counts: counts, mine: mine };
+}
+
+function getPapanTindakLanjut(sessionToken) {
+  const session = requireSession_(sessionToken, ['resident', 'admin', 'super_admin']);
+  const base = buildPapanBase_();
+  const support = papanSupportIndex_(session.username);
+  const owned = {};
+  getSheetData_(SHEET_DATA).forEach(function (row) {
+    if (String(row.Publik || '') === 'Ya' && String(row.Username || '').toLowerCase() === String(session.username || '').toLowerCase()) owned[String(row.ID)] = true;
+  });
+  return {
+    success: true, bulan: base.bulan, stats: base.stats,
+    items: base.items.map(function (it) {
+      return Object.assign({}, it, { dukungan: support.counts[it.id] || 0, didukung: !!support.mine[it.id], milikSaya: !!owned[it.id] });
+    })
+  };
+}
+
+function getPapanDetail(sessionToken, id) {
+  const session = requireSession_(sessionToken, ['resident', 'admin', 'super_admin']);
+  const target = String(id || '').trim();
+  const row = getSheetData_(SHEET_DATA).find(function (r) { return String(r.ID || '') === target && String(r.Publik || '') === 'Ya'; });
+  if (!row) return { success: false, message: 'Aspirasi ini tidak (lagi) ditampilkan di papan.' };
+  const stage = papanStage_(row);
+  const support = papanSupportIndex_(session.username);
+  const fmt = function (v) { const t = notificationDate_(v); return t ? formatTanggal_(new Date(t)) : ''; };
+  const timeline = [{ label: 'Aspirasi masuk', waktu: fmt(row.Timestamp), done: true }];
+  timeline.push({ label: 'Dibaca pengurus', waktu: fmt(row.DibacaPada), done: stage.step >= 2 });
+  timeline.push({ label: 'Ditindaklanjuti', waktu: fmt(row.PublikPada), catatan: String(row.CatatanPublik || ''), done: stage.step >= 3 });
+  timeline.push({ label: stage.rejected ? 'Tidak dapat ditindaklanjuti' : 'Selesai', waktu: fmt(row.SelesaiPada || (stage.step === 4 ? row.LastUpdatedAt : '')), done: stage.step >= 4 });
+  return {
+    success: true,
+    item: {
+      id: target, kategori: String(row.Kategori || ''), judul: String(row.JudulPublik || ''), lokasi: String(row.LokasiPublik || 'Area umum'),
+      step: stage.step, statusLabel: stage.label, ditolak: !!stage.rejected, timeline: timeline,
+      dukungan: support.counts[target] || 0, didukung: !!support.mine[target],
+      milikSaya: String(row.Username || '').toLowerCase() === String(session.username || '').toLowerCase()
+    }
+  };
+}
+
+function setAspirasiPublik(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['admin', 'super_admin']);
+  const id = String(payload.id || '').trim();
+  const publik = !!payload.publik;
+  const judul = publik ? validateString_(payload.judul, 'Judul untuk warga', 5, 120) : '';
+  const lokasi = publik ? validateString_(payload.lokasi || 'Area umum', 'Lokasi untuk warga', 2, 60) : '';
+  const catatan = String(payload.catatan || '').trim();
+  if (catatan.length > 400) return { success: false, message: 'Catatan perkembangan maksimal 400 karakter.' };
+  if (publik && payload.konfirmasiPrivasi !== true) return { success: false, message: 'Centang konfirmasi bahwa judul dan catatan tidak memuat nama, nomor unit, atau nomor telepon.' };
+  if (publik && /(\b0?8\d{8,}|\+?62\d{8,})/.test(judul + ' ' + catatan)) return { success: false, message: 'Judul atau catatan tampak memuat nomor telepon. Hapus dulu.' };
+  ensureAspirasiBookColumns_();
+  return withScriptLock_(function () {
+    const sheet = getSheet_(SHEET_DATA);
+    const values = sheet.getDataRange().getValues();
+    const headers = values[0].map(String);
+    const col = function (h) { return headers.indexOf(h) + 1; };
+    for (let i = 1; i < values.length; i++) {
+      if (String(values[i][col('ID') - 1] == null ? '' : values[i][col('ID') - 1]).trim() !== id) continue;
+      const wasPublic = String(values[i][col('Publik') - 1] || '') === 'Ya';
+      sheet.getRange(i + 1, col('Publik')).setValue(publik ? 'Ya' : '');
+      if (publik) {
+        sheet.getRange(i + 1, col('JudulPublik')).setValue(sheetText_(judul));
+        sheet.getRange(i + 1, col('LokasiPublik')).setValue(sheetText_(lokasi));
+        sheet.getRange(i + 1, col('CatatanPublik')).setValue(sheetText_(catatan));
+        sheet.getRange(i + 1, col('PublikPada')).setValue(new Date());
+        sheet.getRange(i + 1, col('PublikOleh')).setValue(sheetText_(session.username));
+      }
+      writeAuditLog_(publik ? 'PUBLISH_ASPIRASI' : 'UNPUBLISH_ASPIRASI', session.username, id, publik ? judul : '');
+      invalidatePapanCache_();
+      const owner = String(values[i][col('Username') - 1] || '').trim();
+      if (publik && !wasPublic && owner) {
+        queuePush_({ usernames: [owner] }, { title: 'Aspirasi Anda tampil di Papan Tindak Lanjut', body: 'Tanpa nama dan unit Anda. Bisa disembunyikan dari Riwayat Aspirasi.', page: 'riwayat' });
+      }
+      return { success: true, message: publik ? 'Aspirasi tampil di Papan Tindak Lanjut.' : 'Aspirasi disembunyikan dari papan.' };
+    }
+    return { success: false, notFound: true, message: 'Data tidak ditemukan. Muat ulang daftar aspirasi.' };
+  });
+}
+
+// Pelapor menyembunyikan aspirasinya sendiri dari papan.
+function hideMyAspirasiFromPapan(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
+  const id = String(payload.id || '').trim();
+  return withScriptLock_(function () {
+    const sheet = getSheet_(SHEET_DATA);
+    const values = sheet.getDataRange().getValues();
+    const headers = values[0].map(String);
+    const idCol = headers.indexOf('ID'), userCol = headers.indexOf('Username'), pubCol = headers.indexOf('Publik');
+    if (pubCol < 0) return { success: false, message: 'Aspirasi ini tidak tampil di papan.' };
+    for (let i = 1; i < values.length; i++) {
+      if (String(values[i][idCol] || '').trim() !== id) continue;
+      if (String(values[i][userCol] || '').toLowerCase() !== String(session.username || '').toLowerCase()) return { success: false, message: 'Hanya pelapor yang bisa menyembunyikan aspirasi ini.' };
+      sheet.getRange(i + 1, pubCol + 1).setValue('');
+      writeAuditLog_('UNPUBLISH_ASPIRASI', session.username, id, 'Disembunyikan oleh pelapor');
+      invalidatePapanCache_();
+      queuePush_({ admins: true }, { title: 'Aspirasi disembunyikan pelapor', body: 'Pelapor meminta aspirasinya tidak tampil di Papan Tindak Lanjut.', page: 'admin' });
+      return { success: true, message: 'Aspirasi Anda tidak lagi tampil di papan.' };
+    }
+    return { success: false, message: 'Aspirasi tidak ditemukan.' };
+  });
+}
+
+function toggleAspirasiDukungan(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
+  const id = String(payload.id || '').trim();
+  const row = getSheetData_(SHEET_DATA).find(function (r) { return String(r.ID || '') === id && String(r.Publik || '') === 'Ya'; });
+  if (!row) return { success: false, message: 'Aspirasi ini tidak (lagi) ditampilkan di papan.' };
+  if (String(row.Username || '').toLowerCase() === String(session.username || '').toLowerCase()) return { success: false, message: 'Ini aspirasi Anda sendiri.' };
+  return withScriptLock_(function () {
+    const sheet = getAspirasiDukunganSheet_();
+    const values = sheet.getDataRange().getValues();
+    const me = String(session.username || '').toLowerCase();
+    for (let i = values.length - 1; i >= 1; i--) {
+      if (String(values[i][0]) === id && String(values[i][1]).toLowerCase() === me) {
+        sheet.deleteRow(i + 1);
+        return { success: true, didukung: false, dukungan: papanSupportIndex_(session.username).counts[id] || 0 };
+      }
+    }
+    sheet.appendRow([sheetText_(id), sheetText_(session.username), new Date()]);
+    return { success: true, didukung: true, dukungan: papanSupportIndex_(session.username).counts[id] || 0 };
+  });
+}
+
+// ===================================================================
+// v19 — DINDING APRESIASI (modul terpisah dari Aspirasi)
+// -------------------------------------------------------------------
+// Ucapan terima kasih langsung tampil. Penulis bisa menghapus miliknya sendiri;
+// Admin dan Super Admin bisa menghapus apa pun (moderasi). Warga lain melihat
+// pengirim sebagai jenis warga (Status_Wisma), bukan nama.
+// ===================================================================
+const SHEET_APRESIASI = 'Apresiasi';
+const SHEET_APRESIASI_DUKUNGAN = 'ApresiasiDukungan';
+const APRESIASI_HEADERS = ['ID', 'CreatedAt', 'Username', 'Untuk', 'UntukDetail', 'Pesan', 'Status', 'DihapusOleh', 'DihapusPada'];
+const APRESIASI_TARGETS = ['Keamanan', 'Kebersihan', 'Teknisi', 'Pengelola', 'Pengurus', 'Sesama warga'];
+const APRESIASI_MAX_PER_DAY = 5;
+
+function getApresiasiSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_APRESIASI);
+  if (!sheet) { sheet = ss.insertSheet(SHEET_APRESIASI); sheet.appendRow(APRESIASI_HEADERS); sheet.setFrozenRows(1); }
+  return sheet;
+}
+
+function getApresiasiDukunganSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(SHEET_APRESIASI_DUKUNGAN);
+  if (!sheet) { sheet = ss.insertSheet(SHEET_APRESIASI_DUKUNGAN); sheet.appendRow(['ApresiasiID', 'Username', 'CreatedAt']); try { sheet.hideSheet(); } catch (ignore) {} }
+  return sheet;
+}
+
+function getApresiasi(sessionToken) {
+  const session = requireSession_(sessionToken, ['resident', 'admin', 'super_admin']);
+  const me = String(session.username || '').toLowerCase();
+  const canModerate = session.role === 'admin' || session.role === 'super_admin';
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_APRESIASI);
+  if (!sheet || sheet.getLastRow() < 2) return { success: true, items: [], targets: APRESIASI_TARGETS, canModerate: canModerate };
+  const counts = {}, mine = {};
+  const dukSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_APRESIASI_DUKUNGAN);
+  if (dukSheet && dukSheet.getLastRow() > 1) getSheetData_(SHEET_APRESIASI_DUKUNGAN).forEach(function (row) {
+    const id = String(row.ApresiasiID || ''); if (!id) return;
+    counts[id] = (counts[id] || 0) + 1;
+    if (String(row.Username || '').toLowerCase() === me) mine[id] = true;
+  });
+  const labelOf = jelajahPublicLabeler_();
+  const now = Date.now();
+  const items = getSheetData_(SHEET_APRESIASI).filter(function (row) { return row.ID && String(row.Status || 'Aktif') === 'Aktif'; })
+    .slice(-300).reverse().map(function (row) {
+      const owner = String(row.Username || '').toLowerCase();
+      const t = notificationDate_(row.CreatedAt);
+      return {
+        id: String(row.ID), untuk: String(row.Untuk || ''), untukDetail: String(row.UntukDetail || ''), pesan: String(row.Pesan || ''),
+        dari: owner ? labelOf(owner) : 'Warga (akun dihapus)', waktuMs: t || 0, waktu: t ? formatTanggal_(new Date(t)) : '',
+        milikSaya: !!owner && owner === me, bisaHapus: canModerate || (!!owner && owner === me),
+        dukungan: counts[String(row.ID)] || 0, didukung: !!mine[String(row.ID)]
+      };
+    });
+  return { success: true, items: items, targets: APRESIASI_TARGETS, canModerate: canModerate, serverNowMs: now };
+}
+
+function submitApresiasi(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
+  const untuk = String(payload.untuk || '').trim();
+  if (APRESIASI_TARGETS.indexOf(untuk) < 0) return { success: false, message: 'Pilih untuk siapa apresiasi ini.' };
+  const untukDetail = String(payload.untukDetail || '').trim();
+  if (untukDetail.length > 60) return { success: false, message: 'Keterangan penerima maksimal 60 karakter.' };
+  const pesan = validateString_(payload.pesan, 'Pesan', 5, 280);
+  if (/(\b0?8\d{8,}|\+?62\d{8,})/.test(pesan + ' ' + untukDetail)) return { success: false, message: 'Mohon jangan mencantumkan nomor telepon di dinding.' };
+  return withScriptLock_(function () {
+    const sheet = getApresiasiSheet_();
+    const me = String(session.username || '').toLowerCase();
+    const dayAgo = Date.now() - 86400000;
+    const today = getSheetData_(SHEET_APRESIASI).filter(function (row) {
+      return String(row.Username || '').toLowerCase() === me && notificationDate_(row.CreatedAt) > dayAgo;
+    }).length;
+    if (today >= APRESIASI_MAX_PER_DAY) return { success: false, message: 'Batas ' + APRESIASI_MAX_PER_DAY + ' apresiasi per hari sudah tercapai. Coba lagi besok.' };
+    const id = 'P' + Utilities.getUuid().replace(/-/g, '').substring(0, 9).toUpperCase();
+    sheet.appendRow([id, new Date(), sheetText_(session.username), untuk, sheetText_(untukDetail), sheetText_(pesan), 'Aktif', '', '']);
+    writeAuditLog_('SUBMIT_APRESIASI', session.username, id, untuk);
+    return { success: true, id: id, message: 'Terima kasih! Apresiasi Anda sudah tampil di dinding.' };
+  });
+}
+
+function deleteApresiasi(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
+  const id = String(payload.id || '').trim();
+  const canModerate = session.role === 'admin' || session.role === 'super_admin';
+  return withScriptLock_(function () {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_APRESIASI);
+    if (!sheet) return { success: false, message: 'Apresiasi tidak ditemukan.' };
+    const values = sheet.getDataRange().getValues();
+    const h = values[0].map(String);
+    for (let i = 1; i < values.length; i++) {
+      if (String(values[i][h.indexOf('ID')]) !== id) continue;
+      const owner = String(values[i][h.indexOf('Username')] || '').toLowerCase();
+      if (!canModerate && owner !== String(session.username || '').toLowerCase()) return { success: false, message: 'Hanya penulis, Admin, atau Super Admin yang bisa menghapus.' };
+      sheet.getRange(i + 1, h.indexOf('Status') + 1).setValue('Dihapus');
+      sheet.getRange(i + 1, h.indexOf('DihapusOleh') + 1).setValue(sheetText_(session.username));
+      sheet.getRange(i + 1, h.indexOf('DihapusPada') + 1).setValue(new Date());
+      writeAuditLog_('DELETE_APRESIASI', session.username, id, owner === String(session.username || '').toLowerCase() ? 'oleh penulis' : 'moderasi');
+      return { success: true, message: 'Apresiasi dihapus dari dinding.' };
+    }
+    return { success: false, message: 'Apresiasi tidak ditemukan.' };
+  });
+}
+
+function toggleApresiasiDukungan(payload) {
+  const session = requireSession_(payload && payload.sessionToken, ['resident', 'admin', 'super_admin']);
+  const id = String(payload.id || '').trim();
+  const exists = getSheet_(SHEET_APRESIASI) && getSheetData_(SHEET_APRESIASI).some(function (row) { return String(row.ID) === id && String(row.Status || 'Aktif') === 'Aktif'; });
+  if (!exists) return { success: false, message: 'Apresiasi ini sudah tidak ada.' };
+  return withScriptLock_(function () {
+    const sheet = getApresiasiDukunganSheet_();
+    const values = sheet.getDataRange().getValues();
+    const me = String(session.username || '').toLowerCase();
+    let count = 0, found = -1;
+    for (let i = 1; i < values.length; i++) {
+      if (String(values[i][0]) !== id) continue;
+      count++;
+      if (String(values[i][1]).toLowerCase() === me) found = i;
+    }
+    if (found > 0) { sheet.deleteRow(found + 1); return { success: true, didukung: false, dukungan: count - 1 }; }
+    sheet.appendRow([sheetText_(id), sheetText_(session.username), new Date()]);
+    return { success: true, didukung: true, dukungan: count + 1 };
+  });
+}
+
+// ===================================================================
+// v19 — RETENSI DATA (sesuai Kebijakan Privasi), dijalankan pemicu harian
+// -------------------------------------------------------------------
+//   AuditLog ............................ 1 tahun
+//   ErrorLog ............................ 60 hari (ERROR_LOG_RETENTION_DAYS)
+//   ArsipAkunDihapus .................... 1 tahun
+//   LogNotifikasi ....................... 2.000 baris terbaru (pruneNotificationLog_)
+//   Apresiasi yang sudah dihapus ........ 90 hari, lalu barisnya dihapus
+//   Kepuasan ............................ username dikosongkan setelah 1 tahun (skor tetap)
+//   Aspirasi ............................ identitas pelapor dianonimkan setelah 3 tahun
+//                                         (isi tetap sebagai arsip pengelolaan gedung)
+//   Akun tanpa profil lengkap ........... 7 hari (pembersihan akun)
+//   Sesi masuk .......................... 6 jam / 30 hari ("Ingat saya")
+// ===================================================================
+const RETENTION_DAYS = { audit: 365, archive: 365, apresiasiDeleted: 90, kepuasanUser: 365, aspirasiIdentity: 365 * 3 };
+const RETENTION_MAX_ROWS_PER_RUN = 3000;
+
+// Untuk log yang ditulis berurutan (kolom pertama = waktu): hapus baris terlama sekaligus.
+function pruneLogByAge_(sheetName, days) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) return 0;
+  const limit = Math.min(sheet.getLastRow() - 1, RETENTION_MAX_ROWS_PER_RUN);
+  const stamps = sheet.getRange(2, 1, limit, 1).getValues();
+  const cutoff = Date.now() - days * 86400000;
+  let n = 0;
+  while (n < stamps.length) {
+    const t = notificationDate_(stamps[n][0]);
+    if (!t || t >= cutoff) break;
+    n++;
+  }
+  if (n > 0) sheet.deleteRows(2, n);
+  return n;
+}
+
+function applyDataRetention_() {
+  const report = {};
+  const cutoff = function (days) { return Date.now() - days * 86400000; };
+  report.auditLog = pruneLogByAge_(AUDIT_SHEET, RETENTION_DAYS.audit);
+  report.errorLog = pruneLogByAge_('ErrorLog', ERROR_LOG_RETENTION_DAYS);
+  report.arsipAkun = pruneLogByAge_(SHEET_ACCOUNT_ARCHIVE, RETENTION_DAYS.archive);
+
+  // Apresiasi yang sudah dihapus: buang barisnya setelah 90 hari.
+  const ap = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_APRESIASI);
+  report.apresiasiDihapus = 0;
+  if (ap && ap.getLastRow() > 1) {
+    const v = ap.getDataRange().getValues(); const h = v[0].map(String);
+    for (let i = v.length - 1; i >= 1; i--) {
+      if (String(v[i][h.indexOf('Status')]) === 'Dihapus' && notificationDate_(v[i][h.indexOf('DihapusPada')]) < cutoff(RETENTION_DAYS.apresiasiDeleted)) {
+        ap.deleteRow(i + 1); report.apresiasiDihapus++;
+      }
+    }
+  }
+
+  // Kepuasan: kosongkan username setelah 1 tahun.
+  report.kepuasan = 0;
+  const kp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_KEPUASAN);
+  if (kp && kp.getLastRow() > 1) {
+    const v = kp.getDataRange().getValues(); const h = v[0].map(String);
+    const uc = h.indexOf('Username'), tc = h.indexOf('Timestamp');
+    if (uc >= 0 && tc >= 0) for (let i = 1; i < v.length && report.kepuasan < RETENTION_MAX_ROWS_PER_RUN; i++) {
+      if (v[i][uc] && notificationDate_(v[i][tc]) && notificationDate_(v[i][tc]) < cutoff(RETENTION_DAYS.kepuasanUser)) { kp.getRange(i + 1, uc + 1).setValue(''); report.kepuasan++; }
+    }
+  }
+
+  // Aspirasi: anonimkan identitas pelapor setelah 3 tahun.
+  report.aspirasi = 0;
+  const as = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_DATA);
+  if (as && as.getLastRow() > 1) {
+    const v = as.getDataRange().getValues(); const h = v[0].map(String);
+    const c = function (name) { return h.indexOf(name); };
+    for (let i = 1; i < v.length && report.aspirasi < RETENTION_MAX_ROWS_PER_RUN; i++) {
+      const t = notificationDate_(v[i][c('Timestamp')]);
+      if (!t || t >= cutoff(RETENTION_DAYS.aspirasiIdentity)) continue;
+      const alreadyDone = !v[i][c('Username')] && /\(akun dihapus\)|\(diarsipkan\)/.test(String(v[i][c('Nama')] || ''));
+      if (alreadyDone) continue;
+      const set = function (name, value) { if (c(name) >= 0) as.getRange(i + 1, c(name) + 1).setValue(value); };
+      set('Nama', sheetText_((nameInitials_(v[i][c('Nama')]) ? 'Warga ' + nameInitials_(v[i][c('Nama')]) : 'Warga') + ' (diarsipkan)'));
+      set('Username', ''); set('Email_Pengisi', '');
+      if (c('Nomor_WhatsApp') >= 0) set('Nomor_WhatsApp', sealPersonalValue_(v[i][c('Nomor_WhatsApp')], 'wa'));
+      if (c('Unit') >= 0) set('Unit', sealPersonalValue_(v[i][c('Unit')], 'unit'));
+      report.aspirasi++;
+    }
+  }
+  if (Object.keys(report).some(function (k) { return report[k] > 0; })) writeAuditLog_('RETENSI_DATA', 'sistem', 'harian', JSON.stringify(report));
+  return report;
 }
